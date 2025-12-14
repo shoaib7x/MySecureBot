@@ -13,13 +13,12 @@ from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from web_server import keep_alive
 
-# --- LOAD CONFIGURATION (Direct from Render Environment) ---
-# Dotenv hata diya hai taaki error na aaye
+# --- LOAD CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# Setup Logging
+# Logging
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,6 @@ logger = logging.getLogger(__name__)
 if API_ID == 0 or not BOT_TOKEN:
     logger.error("❌ CRITICAL ERROR: Token missing! Render Environment Check karo.")
 
-# Owner & Admins
 OWNERS = [int(x) for x in os.environ.get("OWNER_IDS", "").split() if x.strip()]
 ADMINS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split() if x.strip()]
 ADMINS.extend(OWNERS)
@@ -40,7 +38,7 @@ META_AUTHOR = os.environ.get("METADATA_AUTHOR", "Winning Wonders Hub")
 DOWNLOAD_DIR = "/app/downloads"
 COOKIES_FILE = "cookies.txt"
 
-# Cookie Security (Render Env se file banayega)
+# Cookie Security (Write cookies if available)
 if "COOKIES_CONTENT" in os.environ:
     with open(COOKIES_FILE, "w") as f:
         f.write(os.environ.get("COOKIES_CONTENT"))
@@ -48,67 +46,34 @@ if "COOKIES_CONTENT" in os.environ:
 app = Client("pro_bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 user_cooldowns = {}
-COOLDOWN_SECONDS = 60
 DOWNLOAD_QUEUE = {}
 DB_NAME = "bot_data.db"
 
-# --- DB FUNCTIONS ---
+# --- DB & HELPERS ---
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TEXT)")
-    c.execute("CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY, reason TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
     conn.commit()
     conn.close()
 
 def add_user(user_id):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    try:
-        conn.cursor().execute("INSERT OR IGNORE INTO users (user_id, join_date) VALUES (?, ?)", (user_id, str(time.time())))
-        conn.commit()
-    except: pass
-    conn.close()
-
-def is_banned(user_id):
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    res = conn.cursor().execute("SELECT user_id FROM banned WHERE user_id=?", (user_id,)).fetchone()
-    conn.close()
-    return res is not None
-
-def ban_user_db(user_id):
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.cursor().execute("INSERT OR REPLACE INTO banned (user_id, reason) VALUES (?, ?)", (user_id, "Banned"))
+    conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
     conn.commit()
     conn.close()
 
-def unban_user_db(user_id):
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.cursor().execute("DELETE FROM banned WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    users = [row[0] for row in conn.cursor().execute("SELECT user_id FROM users").fetchall()]
-    conn.close()
-    return users
-
-# --- HELPER FUNCTIONS ---
 async def handle_force_sub(client, message):
     if not FORCE_SUB: return True
     user_id = message.from_user.id
     if user_id in ADMINS: return True
     try:
-        member = await client.get_chat_member(FORCE_SUB, user_id)
-        if member.status == enums.ChatMemberStatus.BANNED:
-            await message.reply("❌ You are banned from the channel.")
-            return False
+        await client.get_chat_member(FORCE_SUB, user_id)
         return True
     except errors.UserNotParticipant:
         try:
-            invite_link = await client.export_chat_invite_link(FORCE_SUB)
-            buttons = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite_link)]])
-            await message.reply_text("⚠️ **Please Join Update Channel!**", reply_markup=buttons)
+            invite = await client.export_chat_invite_link(FORCE_SUB)
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite)]])
+            await message.reply("⚠️ **Please Join Update Channel!**", reply_markup=btn)
             return False
         except: return True
     except: return True
@@ -123,17 +88,6 @@ def humanbytes(size):
         n += 1
     return str(round(size, 2)) + " " + Dic_powerN.get(n, '') + 'B'
 
-def TimeFormatter(milliseconds: int) -> str:
-    seconds, milliseconds = divmod(int(milliseconds), 1000)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    tmp = ((str(days) + "d, ") if days else "") + \
-          ((str(hours) + "h, ") if hours else "") + \
-          ((str(minutes) + "m, ") if minutes else "") + \
-          ((str(seconds) + "s") if seconds else "")
-    return tmp[:-2] if tmp.endswith(", ") else tmp
-
 async def progress_bar(current, total, message, start_time, status_text):
     try:
         now = time.time()
@@ -141,11 +95,8 @@ async def progress_bar(current, total, message, start_time, status_text):
         if round(diff % 5.00) == 0 or current == total:
             speed = current / diff if diff > 0 else 0
             percentage = current * 100 / total
-            eta = (total - current) / speed if speed > 0 else 0
-            bar_len = 12
-            filled = int(percentage / 100 * bar_len)
-            bar = '▰' * filled + '▱' * (bar_len - filled)
-            msg = f"{status_text}\n\n**{bar}** {round(percentage, 1)}%\n💾 `{humanbytes(current)}` / `{humanbytes(total)}`\n🚀 `{humanbytes(speed)}/s` | ⏳ `{TimeFormatter(eta * 1000)}`"
+            bar = '▰' * int(percentage / 100 * 12) + '▱' * (12 - int(percentage / 100 * 12))
+            msg = f"{status_text}\n\n**{bar}** {round(percentage, 1)}%\n💾 `{humanbytes(current)}` / `{humanbytes(total)}`"
             await message.edit(msg)
     except: pass
 
@@ -171,160 +122,104 @@ def prepare_thumbnail(thumb_path):
     if not thumb_path or not os.path.exists(thumb_path): return None
     try:
         img = Image.open(thumb_path)
-        width, height = img.size
-        # Resize logic for Telegram (320px max)
-        if width > 320 or height > 320:
-            if width > height:
-                new_width = 320
-                new_height = int(320 * height / width)
-            else:
-                new_height = 320
-                new_width = int(320 * width / height)
-            img = img.resize((new_width, new_height))
-            img.save(thumb_path, "JPEG")
+        img.thumbnail((320, 320))
+        img.save(thumb_path, "JPEG")
         return thumb_path
     except: return None
 
 # --- HANDLERS ---
 @app.on_message(filters.command("start"))
-async def start_cmd(client, message):
+async def start(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
-    await message.reply(f"👋 **Hi {message.from_user.first_name}!**\nI am Secure & Live 24/7! 🔒\nSend a link to download.", quote=True)
+    await message.reply(f"👋 **Hi {message.from_user.first_name}!**\nBot is Live! 🟢\nSend a link to download.", quote=True)
 
-@app.on_message(filters.command("broadcast") & filters.user(OWNERS))
-async def broadcast_cmd(client, message):
-    if not message.reply_to_message: return await message.reply("❌ Reply to a message.")
-    msg = await message.reply("🚀 Sending...")
-    users = get_all_users()
-    done = 0
-    for uid in users:
-        try:
-            await message.reply_to_message.copy(uid)
-            done += 1
-            await asyncio.sleep(0.1)
-        except: pass
-    await msg.edit(f"✅ Sent to {done} users.")
-
-@app.on_message(filters.command("ban") & filters.user(ADMINS))
-async def ban_cmd(client, message):
-    try:
-        uid = int(message.command[1])
-        if uid in ADMINS: return await message.reply("❌ Cannot ban Admin.")
-        ban_user_db(uid)
-        await message.reply(f"🚫 Banned `{uid}`.")
-    except: await message.reply("❌ Usage: `/ban ID`")
-
-@app.on_message(filters.command("unban") & filters.user(ADMINS))
-async def unban_cmd(client, message):
-    try:
-        uid = int(message.command[1])
-        unban_user_db(uid)
-        await message.reply(f"✅ Unbanned `{uid}`.")
-    except: await message.reply("❌ Usage: `/unban ID`")
-
-@app.on_message(filters.command("log") & filters.user(OWNERS))
-async def log_cmd(client, message):
-    try:
-        if os.path.exists(DB_NAME): await message.reply_document(DB_NAME, caption="🗄 Database")
-        else: await message.reply("❌ DB not found.")
-    except: pass
-
-# --- DOWNLOADER ---
 @app.on_message(filters.command(["dl", "download"]))
-async def init_dl(client, message):
+async def dl_cmd(client, message):
     user_id = message.from_user.id
     add_user(user_id)
-    if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    if user_id not in ADMINS:
-        if user_id in user_cooldowns:
-            rem = COOLDOWN_SECONDS - (time.time() - user_cooldowns[user_id])
-            if rem > 0: return await message.reply(f"⏳ Wait {int(rem)}s.")
-
     url = message.command[1] if len(message.command) > 1 else (message.reply_to_message.text if message.reply_to_message else None)
     if not url: return await message.reply("❌ Send Link.")
 
     req_id = str(uuid.uuid4())[:8]
     DOWNLOAD_QUEUE[req_id] = {"url": url, "uid": user_id}
     
-    auth_status = "✅ Auth" if os.path.exists(COOKIES_FILE) else "⚠️ No Auth"
+    # Check cookies status
+    cookies_status = "✅ Cookies Active" if os.path.exists(COOKIES_FILE) else "⚠️ No Cookies (Restricted Videos may fail)"
+    
     btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌟 High Quality (MKV)", callback_data=f"q|best|{req_id}"),
-         InlineKeyboardButton("🎵 Audio Only", callback_data=f"q|audio|{req_id}")]
+        [InlineKeyboardButton("🌟 High Quality (MKV)", callback_data=f"q|best|{req_id}")]
     ])
-    await message.reply_text(f"🎬 **Download Manager**\nLink: `{url}`\nAuth: {auth_status}", reply_markup=btns)
+    await message.reply(f"🎬 **Found Link:**\n`{url}`\nAuth: {cookies_status}", reply_markup=btns)
 
 @app.on_callback_query(filters.regex(r"^q\|"))
-async def process_dl(client, callback: CallbackQuery):
-    _, quality, req_id = callback.data.split("|")
+async def process_dl(client, callback):
+    req_id = callback.data.split("|")[2]
     if req_id not in DOWNLOAD_QUEUE: return await callback.answer("❌ Expired.")
-    req = DOWNLOAD_QUEUE[req_id]
     
+    req = DOWNLOAD_QUEUE[req_id]
     await callback.message.delete()
     status = await callback.message.reply("🔄 **Starting...**")
     
-    if callback.from_user.id not in ADMINS: user_cooldowns[callback.from_user.id] = time.time()
-    
-    user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
+    user_dir = f"downloads/{callback.from_user.id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
-    out_tmpl = f"{user_dir}/{req_id}_%(title)s.%(ext)s"
     
+    # --- ANTI-BOT SETTINGS ---
     ydl_opts = {
-        'outtmpl': out_tmpl, 'quiet': True, 'nocheckcertificate': True,
-        'writethumbnail': True, 'addmetadata': True, 'max_filesize': 1900*1024*1024,
-        'postprocessors': [{'key': 'FFmpegEmbedSubtitle'}], 'writesubtitles': True
+        'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
+        'quiet': True, 
+        'nocheckcertificate': True, 
+        'writethumbnail': True,
+        'format': 'bestvideo+bestaudio/best', 
+        'merge_output_format': 'mkv',
+        
+        # Spoofing User Agent (To look like a real PC)
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'referer': 'https://www.youtube.com/',
+        'socket_timeout': 10,
+        'retries': 5
     }
-    if os.path.exists(COOKIES_FILE): ydl_opts['cookiefile'] = COOKIES_FILE
-
-    if quality == "audio": ydl_opts['format'] = "bestaudio/best"
-    else: 
-        ydl_opts['format'] = "bestvideo+bestaudio/best"
-        ydl_opts['merge_output_format'] = "mkv"
+    
+    # Use cookies if available
+    if os.path.exists(COOKIES_FILE): 
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         await status.edit("⬇️ **Downloading...**")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req['url'], download=True)
             fpath = ydl.prepare_filename(info)
-            tpath = fpath.rsplit(".", 1)[0] + ".jpg"
-            if not os.path.exists(tpath): tpath = fpath.rsplit(".", 1)[0] + ".webp"
-        
-        base = fpath.rsplit(".", 1)[0]
-        if not os.path.exists(fpath):
-            if os.path.exists(base+".mkv"): fpath = base+".mkv"
-            elif os.path.exists(base+".mp4"): fpath = base+".mp4"
-            else: raise Exception("Download Failed")
+            base = fpath.rsplit(".", 1)[0]
+            if not os.path.exists(fpath): fpath = base + ".mkv"
             
-        await status.edit("🏷️ **Injecting Metadata...**")
-        await edit_video_metadata(fpath)
-        
-        await status.edit("⬆️ **Uploading...**")
-        start = time.time()
-        thumb = prepare_thumbnail(tpath)
-        w, h, d = get_metadata(fpath)
-        if d == 0: d = info.get('duration', 0)
-        
-        if quality == "audio":
-            await app.send_audio(callback.message.chat.id, audio=fpath, title=info.get('title'), thumb=thumb, performer=META_AUTHOR, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
-        else:
+            await status.edit("🏷️ **Metadata...**")
+            await edit_video_metadata(fpath)
+            
+            await status.edit("⬆️ **Uploading...**")
+            start = time.time()
+            thumb = base + ".jpg"
+            if not os.path.exists(thumb): thumb = base + ".webp"
+            final_thumb = prepare_thumbnail(thumb)
+            w, h, d = get_metadata(fpath)
+            if d == 0: d = info.get('duration', 0)
+            
             await app.send_video(
                 callback.message.chat.id, video=fpath, caption=f"🎥 **{info.get('title')}**\n👤 {META_AUTHOR}",
-                duration=int(d), width=int(w), height=int(h), thumb=thumb,
+                width=w, height=h, duration=d, thumb=final_thumb,
                 supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**")
             )
-        await status.delete()
+            await status.delete()
     except Exception as e:
-        await status.edit(f"❌ Error: {str(e)[:100]}")
+        await status.edit(f"❌ **Failed:** {str(e)[:200]}\n\n💡 _Tip: Update cookies if this persists._")
     
     try: shutil.rmtree(user_dir)
     except: pass
-    if req_id in DOWNLOAD_QUEUE: del DOWNLOAD_QUEUE[req_id]
 
 if __name__ == "__main__":
     init_db()
-    if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
+    if not os.path.exists("downloads"): os.makedirs("downloads")
     keep_alive()
     app.run()
 
