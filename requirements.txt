@@ -1,0 +1,7 @@
+pyrogram
+tgcrypto
+yt-dlp
+hachoir
+pillow
+flask
+gunicorn
