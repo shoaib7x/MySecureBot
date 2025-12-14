@@ -6,7 +6,6 @@ import yt_dlp
 import uuid
 import logging
 import subprocess
-from dotenv import load_dotenv
 from PIL import Image
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
@@ -14,8 +13,8 @@ from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from web_server import keep_alive
 
-# --- LOAD CONFIGURATION (Direct from Render) ---
-# load_dotenv() hata diya hai taaki file na dhunde
+# --- LOAD CONFIGURATION (Direct from Render Environment) ---
+# Dotenv hata diya hai taaki error na aaye
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -173,6 +172,7 @@ def prepare_thumbnail(thumb_path):
     try:
         img = Image.open(thumb_path)
         width, height = img.size
+        # Resize logic for Telegram (320px max)
         if width > 320 or height > 320:
             if width > height:
                 new_width = 320
