@@ -1,13 +1,12 @@
 import os
 import time
-import math
-import shutil
 import asyncio
 import sqlite3
 import yt_dlp
 import uuid
 import logging
 import subprocess
+from dotenv import load_dotenv
 from PIL import Image
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
@@ -15,48 +14,46 @@ from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from web_server import keep_alive
 
-# --- SECURE CONFIGURATION (Load form Cloud Environment) ---
-# Ye values GitHub par nahi hongi, seedha Render se aayengi
-API_ID = int(os.environ.get("API_ID", "0"))
+# --- LOAD CONFIGURATION (Direct from Render) ---
+# load_dotenv() hata diya hai taaki file na dhunde
+API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
+# Setup Logging
+logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
+logger = logging.getLogger(__name__)
+
+# Check Credentials
+if API_ID == 0 or not BOT_TOKEN:
+    logger.error("❌ CRITICAL ERROR: Token missing! Render Environment Check karo.")
+
 # Owner & Admins
-OWNER_IDS = [int(x) for x in os.environ.get("OWNER_IDS", "").split()]
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split()]
-ADMINS = list(set(ADMIN_IDS + OWNER_IDS))
+OWNERS = [int(x) for x in os.environ.get("OWNER_IDS", "").split() if x.strip()]
+ADMINS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split() if x.strip()]
+ADMINS.extend(OWNERS)
+ADMINS = list(set(ADMINS)) 
 
-# Channels
-FORCE_SUB = os.environ.get("FORCE_SUB_CHANNEL", None)
-LOG_CHANNEL = os.environ.get("LOG_CHANNEL", None)
-
-# Metadata
+FORCE_SUB = int(os.environ.get("FORCE_SUB_CHANNEL")) if os.environ.get("FORCE_SUB_CHANNEL") else None
+LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL")) if os.environ.get("LOG_CHANNEL") else None
 META_TITLE = os.environ.get("METADATA_TITLE", "Downloaded via Bot")
 META_AUTHOR = os.environ.get("METADATA_AUTHOR", "Winning Wonders Hub")
-
-# Settings
 DOWNLOAD_DIR = "/app/downloads"
 COOKIES_FILE = "cookies.txt"
 
-# --- COOKIE SECURITY (Optional) ---
-# Agar cookies content environment variable me hai to file bana lo
+# Cookie Security (Render Env se file banayega)
 if "COOKIES_CONTENT" in os.environ:
     with open(COOKIES_FILE, "w") as f:
         f.write(os.environ.get("COOKIES_CONTENT"))
 
-# Setup
-logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
-logger = logging.getLogger(__name__)
+app = Client("pro_bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-app = Client("secure_bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# Memory
 user_cooldowns = {}
 COOLDOWN_SECONDS = 60
 DOWNLOAD_QUEUE = {}
 DB_NAME = "bot_data.db"
 
-# --- DB & HELPER FUNCTIONS ---
+# --- DB FUNCTIONS ---
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
@@ -97,21 +94,22 @@ def get_all_users():
     conn.close()
     return users
 
+# --- HELPER FUNCTIONS ---
 async def handle_force_sub(client, message):
     if not FORCE_SUB: return True
     user_id = message.from_user.id
     if user_id in ADMINS: return True
     try:
-        # Check integer or username format
-        chat_id = int(FORCE_SUB) if FORCE_SUB.lstrip('-').isdigit() else FORCE_SUB
-        await client.get_chat_member(chat_id, user_id)
+        member = await client.get_chat_member(FORCE_SUB, user_id)
+        if member.status == enums.ChatMemberStatus.BANNED:
+            await message.reply("❌ You are banned from the channel.")
+            return False
         return True
     except errors.UserNotParticipant:
         try:
-            chat_id = int(FORCE_SUB) if FORCE_SUB.lstrip('-').isdigit() else FORCE_SUB
-            invite = await client.export_chat_invite_link(chat_id)
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite)]])
-            await message.reply("⚠️ **Please Join Update Channel!**", reply_markup=btn)
+            invite_link = await client.export_chat_invite_link(FORCE_SUB)
+            buttons = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite_link)]])
+            await message.reply_text("⚠️ **Please Join Update Channel!**", reply_markup=buttons)
             return False
         except: return True
     except: return True
@@ -145,7 +143,9 @@ async def progress_bar(current, total, message, start_time, status_text):
             speed = current / diff if diff > 0 else 0
             percentage = current * 100 / total
             eta = (total - current) / speed if speed > 0 else 0
-            bar = '▰' * int(percentage / 100 * 12) + '▱' * (12 - int(percentage / 100 * 12))
+            bar_len = 12
+            filled = int(percentage / 100 * bar_len)
+            bar = '▰' * filled + '▱' * (bar_len - filled)
             msg = f"{status_text}\n\n**{bar}** {round(percentage, 1)}%\n💾 `{humanbytes(current)}` / `{humanbytes(total)}`\n🚀 `{humanbytes(speed)}/s` | ⏳ `{TimeFormatter(eta * 1000)}`"
             await message.edit(msg)
     except: pass
@@ -172,8 +172,16 @@ def prepare_thumbnail(thumb_path):
     if not thumb_path or not os.path.exists(thumb_path): return None
     try:
         img = Image.open(thumb_path)
-        img.thumbnail((320, 320))
-        img.save(thumb_path, "JPEG")
+        width, height = img.size
+        if width > 320 or height > 320:
+            if width > height:
+                new_width = 320
+                new_height = int(320 * height / width)
+            else:
+                new_height = 320
+                new_width = int(320 * width / height)
+            img = img.resize((new_width, new_height))
+            img.save(thumb_path, "JPEG")
         return thumb_path
     except: return None
 
@@ -184,7 +192,7 @@ async def start_cmd(client, message):
     if not await handle_force_sub(client, message): return
     await message.reply(f"👋 **Hi {message.from_user.first_name}!**\nI am Secure & Live 24/7! 🔒\nSend a link to download.", quote=True)
 
-@app.on_message(filters.command("broadcast") & filters.user(OWNER_IDS))
+@app.on_message(filters.command("broadcast") & filters.user(OWNERS))
 async def broadcast_cmd(client, message):
     if not message.reply_to_message: return await message.reply("❌ Reply to a message.")
     msg = await message.reply("🚀 Sending...")
@@ -215,6 +223,14 @@ async def unban_cmd(client, message):
         await message.reply(f"✅ Unbanned `{uid}`.")
     except: await message.reply("❌ Usage: `/unban ID`")
 
+@app.on_message(filters.command("log") & filters.user(OWNERS))
+async def log_cmd(client, message):
+    try:
+        if os.path.exists(DB_NAME): await message.reply_document(DB_NAME, caption="🗄 Database")
+        else: await message.reply("❌ DB not found.")
+    except: pass
+
+# --- DOWNLOADER ---
 @app.on_message(filters.command(["dl", "download"]))
 async def init_dl(client, message):
     user_id = message.from_user.id
@@ -291,7 +307,7 @@ async def process_dl(client, callback: CallbackQuery):
         if d == 0: d = info.get('duration', 0)
         
         if quality == "audio":
-            await app.send_audio(callback.message.chat.id, audio=fpath, title=info.get('title'), thumb=thumb, performer=META_AUTHOR)
+            await app.send_audio(callback.message.chat.id, audio=fpath, title=info.get('title'), thumb=thumb, performer=META_AUTHOR, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
         else:
             await app.send_video(
                 callback.message.chat.id, video=fpath, caption=f"🎥 **{info.get('title')}**\n👤 {META_AUTHOR}",
