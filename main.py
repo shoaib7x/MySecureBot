@@ -7,7 +7,9 @@ import uuid
 import logging
 import threading
 import shutil
+import math
 import requests
+import subprocess
 import re
 from datetime import datetime
 from flask import Flask
@@ -17,12 +19,12 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. WEB SERVER (24/7 Uptime) ---
+# --- 1. WEB SERVER (24/7 UPTIME) ---
 web_app = Flask('')
 
 @web_app.route('/')
 def home():
-    return "Bot is Running 24/7! 🚀"
+    return "Service is Running 24/7. Status: Online 🟢"
 
 def run_web():
     web_app.run(host='0.0.0.0', port=8080)
@@ -34,7 +36,7 @@ def keep_alive():
 def ping_self():
     while True:
         try:
-            time.sleep(600)
+            time.sleep(600) # 10 Minutes
             requests.get("http://localhost:8080/")
         except: pass
 
@@ -42,38 +44,37 @@ def start_pinger():
     t = threading.Thread(target=ping_self)
     t.start()
 
-# --- 2. CONFIGURATION ---
-def get_env(name, default=None):
+# --- 2. CONFIGURATION (SAFE LOAD) ---
+def get_env(name, default=None, is_int=False):
     val = os.environ.get(name)
     if not val or val.strip() == "":
         return default
-    return val
+    return int(val) if is_int else val
 
-API_ID = int(get_env("API_ID", 0))
+API_ID = get_env("API_ID", 0, True)
 API_HASH = get_env("API_HASH", "")
 BOT_TOKEN = get_env("BOT_TOKEN", "")
 
-# Load Admins & Owners
+# Branding
+AUTHOR_NAME = "@hdhub4uumss"
+AUTHOR_URL = "https://t.me/hdhub4uumss"
+
+# Admins
 OWNERS = [int(x) for x in get_env("OWNER_IDS", "").split() if x.strip()]
 ADMINS = [int(x) for x in get_env("ADMIN_IDS", "").split() if x.strip()]
 ADMINS.extend(OWNERS)
-ADMINS = list(set(ADMINS)) 
+ADMINS = list(set(ADMINS))
 
 FORCE_SUB = get_env("FORCE_SUB_CHANNEL")
-LOG_CHANNEL = int(get_env("LOG_CHANNEL", 0)) # Fixed: Handles empty string gracefully
-META_TITLE = get_env("METADATA_TITLE", "Downloaded via Bot")
-META_AUTHOR = get_env("METADATA_AUTHOR", "Winning Wonders Hub")
+LOG_CHANNEL = get_env("LOG_CHANNEL", 0, True)
 DOWNLOAD_DIR = "/app/downloads"
 
-# --- COOKIE LOGIC ---
+# --- COOKIES LOGIC ---
 COOKIES_PATH = None
-possible_cookies = [
-    "cookie (1).txt", "cookies.txt", "/etc/secrets/cookies.txt", "/app/cookie (1).txt"
-]
+possible_cookies = ["cookie (1).txt", "cookies.txt", "/etc/secrets/cookies.txt"]
 for c in possible_cookies:
     if os.path.exists(c):
         COOKIES_PATH = c
-        print(f"✅ Cookies Found: {c}")
         break
 
 # Logging
@@ -82,23 +83,24 @@ logger = logging.getLogger(__name__)
 
 app = Client("pro_bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-user_cooldowns = {}
-DOWNLOAD_QUEUE = {}
+user_data = {}
 DB_NAME = "bot_data.db"
 
-# --- 3. DATABASE ---
+# --- 3. DATABASE ENGINE ---
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
+    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY)")
     conn.commit()
     conn.close()
 
 def add_user(user_id):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.cursor().execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
+    try:
+        conn.cursor().execute("INSERT OR IGNORE INTO users (user_id, join_date) VALUES (?, ?)", (user_id, str(datetime.now())))
+        conn.commit()
+    except: pass
     conn.close()
 
 def is_banned(user_id):
@@ -125,7 +127,8 @@ def get_all_users():
     conn.close()
     return users
 
-# --- 4. HELPERS ---
+# --- 4. PROFESSIONAL HELPERS ---
+
 def humanbytes(size):
     if not size: return "0B"
     power = 2**10
@@ -136,6 +139,17 @@ def humanbytes(size):
         n += 1
     return str(round(size, 2)) + " " + Dic_powerN.get(n, '') + 'B'
 
+def time_formatter(milliseconds: int) -> str:
+    seconds, milliseconds = divmod(int(milliseconds), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    tmp = ((str(days) + "d, ") if days else "") + \
+          ((str(hours) + "h, ") if hours else "") + \
+          ((str(minutes) + "m, ") if minutes else "") + \
+          ((str(seconds) + "s") if seconds else "")
+    return tmp[:-2] if tmp.endswith(", ") else tmp
+
 async def progress_bar(current, total, message, start_time, status_text):
     try:
         now = time.time()
@@ -144,10 +158,19 @@ async def progress_bar(current, total, message, start_time, status_text):
             speed = current / diff if diff > 0 else 0
             percentage = current * 100 / total
             eta = (total - current) / speed if speed > 0 else 0
+            
+            # Professional Bar
             bar_len = 10
             filled = int(percentage / 100 * bar_len)
-            bar = '⬢' * filled + '⬡' * (bar_len - filled)
-            msg = f"{status_text}\n\n**Progress:** `{bar}` {round(percentage, 1)}%\n**Size:** `{humanbytes(current)}` / `{humanbytes(total)}`\n**Speed:** `{humanbytes(speed)}/s` | **ETA:** `{int(eta)}s`"
+            bar = '■' * filled + '□' * (bar_len - filled)
+            
+            msg = (
+                f"**{status_text}**\n"
+                f"**Progress:** `[{bar}]` {round(percentage, 1)}%\n"
+                f"**Done:** `{humanbytes(current)}` / `{humanbytes(total)}`\n"
+                f"**Speed:** `{humanbytes(speed)}/s`\n"
+                f"**ETA:** `{time_formatter(eta * 1000)}`"
+            )
             await message.edit(msg)
     except: pass
 
@@ -164,7 +187,7 @@ async def handle_force_sub(client, message):
             chat_id = int(FORCE_SUB) if str(FORCE_SUB).startswith("-100") else FORCE_SUB
             invite = await client.export_chat_invite_link(chat_id)
             btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite)]])
-            await message.reply("⚠️ **Please Join Update Channel!**", reply_markup=btn)
+            await message.reply(f"👋 **Hello {message.from_user.first_name}!**\n\nPlease join our channel to use this bot.", reply_markup=btn)
             return False
         except: return True
     except: return True
@@ -185,181 +208,243 @@ def prepare_thumbnail(thumb_path):
     except: return None
 
 # --- 5. COMMANDS ---
+
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
-    txt = f"👋 **Hello {message.from_user.first_name}!**\n\nI am an **Universal Video Downloader**.\nI support 1000+ sites with **Cookies Support**.\n\n🔹 **Dev:** {META_AUTHOR}"
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📚 Help", callback_data="help"), InlineKeyboardButton("ℹ️ About", callback_data="about")]
-    ])
-    await message.reply(txt, reply_markup=btns, quote=True)
-
-@app.on_message(filters.command("help"))
-async def help_cmd(client, message):
-    txt = "**User Commands:**\n/dl <link> - Download\n/start - Check Alive\n\n**Admin:**\n/ban <id>\n/unban <id>\n/broadcast <reply>\n/log - DB File"
-    await message.reply(txt, quote=True)
+    
+    txt = (
+        f"**👋 Hello {message.from_user.mention},**\n\n"
+        "I am an **Advanced Universal File Downloader**.\n"
+        "I can download media from **YouTube, Instagram, X, TikTok**, and direct links.\n\n"
+        "**Features:**\n"
+        "⚡ Fast Speed Leeching\n"
+        "📂 Document & Video Mode\n"
+        "🏷️ Custom Metadata Support\n\n"
+        f"👤 **Maintained By:** {AUTHOR_NAME}"
+    )
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton("ℹ️ About", callback_data="about"), InlineKeyboardButton("🆘 Help", callback_data="help")]])
+    await message.reply(txt, quote=True, reply_markup=btns, disable_web_page_preview=True)
 
 @app.on_callback_query(filters.regex("help"))
 async def help_cb(client, callback):
-    txt = "**User Commands:**\n/dl <link> - Download\n/start - Check Alive\n\n**Admin:**\n/ban <id>\n/unban <id>\n/broadcast <reply>\n/log - DB File"
-    await callback.message.edit(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]]))
+    txt = (
+        "**📚 Help Menu**\n\n"
+        "**How to use:**\n"
+        "• Send any video link to download.\n"
+        "• Select your preferred format.\n\n"
+        "**Admin Commands:**\n"
+        "• `/broadcast <reply>` - Send message to all users.\n"
+        "• `/ban <user_id>` - Ban a user.\n"
+        "• `/unban <user_id>` - Unban a user.\n"
+        "• `/log` - Get bot log file.\n\n"
+        "**Powered by:** " + AUTHOR_NAME
+    )
+    await callback.message.edit(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="start")]]))
 
-@app.on_callback_query(filters.regex("back"))
-async def back_cb(client, callback):
-    await callback.message.edit(f"👋 **Hello {callback.from_user.first_name}!**\n\nSend a link to download.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📚 Help", callback_data="help")]]))
+@app.on_callback_query(filters.regex("start"))
+async def start_cb(client, callback):
+    await start_cmd(client, callback.message)
 
+# --- ADMIN COMMANDS ---
 @app.on_message(filters.command("broadcast") & filters.user(OWNERS))
-async def broadcast_cmd(client, message):
-    if not message.reply_to_message: return await message.reply("Reply to message!")
-    msg = await message.reply("🚀 Sending...")
+async def broadcast(client, message):
+    if not message.reply_to_message: return await message.reply("❌ **Error:** Reply to a message to broadcast.")
+    msg = await message.reply("🚀 **Broadcasting...**")
     users = get_all_users()
-    done = 0
-    blocked = 0
+    done, blocked = 0, 0
     for uid in users:
         try:
             await message.reply_to_message.copy(uid)
             done += 1
             await asyncio.sleep(0.1)
         except: blocked += 1
-    await msg.edit(f"✅ **Broadcast Done!**\nSent: {done}\nFailed: {blocked}")
+    await msg.edit(f"✅ **Broadcast Completed**\n\nSent: `{done}`\nFailed: `{blocked}`")
 
 @app.on_message(filters.command("ban") & filters.user(ADMINS))
-async def ban_cmd(client, message):
+async def ban(client, message):
     try:
         uid = int(message.command[1])
+        if uid in ADMINS: return await message.reply("❌ Cannot ban Admin.")
         ban_user_db(uid)
-        await message.reply(f"🚫 Banned {uid}")
-    except: await message.reply("Usage: /ban UserID")
+        await message.reply(f"🚫 **User {uid} Banned.**")
+    except: await message.reply("❌ Usage: `/ban <id>`")
 
 @app.on_message(filters.command("unban") & filters.user(ADMINS))
-async def unban_cmd(client, message):
+async def unban(client, message):
     try:
         uid = int(message.command[1])
         unban_user_db(uid)
-        await message.reply(f"✅ Unbanned {uid}")
-    except: await message.reply("Usage: /unban UserID")
+        await message.reply(f"✅ **User {uid} Unbanned.**")
+    except: await message.reply("❌ Usage: `/unban <id>`")
 
 @app.on_message(filters.command("log") & filters.user(OWNERS))
-async def log_cmd(client, message):
+async def log(client, message):
     if os.path.exists(DB_NAME): await message.reply_document(DB_NAME)
-    else: await message.reply("No Data.")
+    else: await message.reply("No Database Found.")
 
-# --- 6. DOWNLOAD HANDLER ---
+@app.on_message(filters.command("addadmin") & filters.user(OWNERS))
+async def add_admin(client, message):
+    await message.reply("ℹ️ To add Admins, please add their IDs to the `ADMIN_IDS` variable in Render settings.", quote=True)
+
+# --- 6. UNIVERSAL DOWNLOADER LOGIC ---
+
 @app.on_message(filters.regex(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+") | filters.command(["dl", "download"]))
-async def dl_init(client, message):
+async def link_handler(client, message):
     user_id = message.from_user.id
     add_user(user_id)
-    if is_banned(user_id): return await message.reply("🚫 You are banned.")
+    if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
     url = message.text
     if message.command and len(message.command) > 1: url = message.command[1]
     
     req_id = str(uuid.uuid4())[:8]
-    DOWNLOAD_QUEUE[req_id] = {"url": url, "uid": user_id}
+    user_data[req_id] = {"url": url, "uid": user_id}
     
+    auth_status = "✅ Cookies" if COOKIES_PATH else "⚠️ No Auth"
+    
+    # PROFESSIONAL BUTTONS LAYOUT
     btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌟 Best (MKV)", callback_data=f"q|best|{req_id}"),
-         InlineKeyboardButton("🎵 Audio", callback_data=f"q|audio|{req_id}")],
-        [InlineKeyboardButton("📺 720p", callback_data=f"q|720|{req_id}"),
-         InlineKeyboardButton("📺 480p", callback_data=f"q|480|{req_id}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"q|cancel|{req_id}")]
+        [InlineKeyboardButton("🚀 Leech (Video)", callback_data=f"dl|leech|{req_id}"),
+         InlineKeyboardButton("📂 Mirror (Doc)", callback_data=f"dl|mirror|{req_id}")],
+        [InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl|audio|{req_id}"),
+         InlineKeyboardButton("❌ Cancel", callback_data=f"dl|cancel|{req_id}")]
     ])
-    await message.reply(f"🎬 **Found Link:**\n`{url}`", reply_markup=btns, quote=True)
+    
+    await message.reply(
+        f"🔗 **Link Received**\n`{url}`\n\n🛡️ **Status:** {auth_status}\n👇 **Select Action:**",
+        reply_markup=btns,
+        quote=True,
+        disable_web_page_preview=True
+    )
 
-@app.on_callback_query(filters.regex(r"^q\|"))
+@app.on_callback_query(filters.regex(r"^dl\|"))
 async def process_dl(client, callback):
-    _, quality, req_id = callback.data.split("|")
-    if req_id not in DOWNLOAD_QUEUE: return await callback.answer("❌ Expired.")
-    if quality == "cancel":
-        del DOWNLOAD_QUEUE[req_id]
-        return await callback.message.delete()
+    _, action, req_id = callback.data.split("|")
+    
+    if req_id not in user_data:
+        return await callback.answer("❌ Task Expired.", show_alert=True)
+    
+    if user_data[req_id]['uid'] != callback.from_user.id:
+        return await callback.answer("❌ Not your task!", show_alert=True)
 
-    req = DOWNLOAD_QUEUE[req_id]
-    if callback.from_user.id != req['uid']: return await callback.answer("❌ Not your task!")
+    if action == "cancel":
+        del user_data[req_id]
+        await callback.message.delete()
+        return
 
     await callback.message.delete()
-    status = await callback.message.reply("🔄 **Starting...**")
+    status = await callback.message.reply("🔄 **Processing Request...**")
     
-    user_dir = f"downloads/{callback.from_user.id}"
+    url = user_data[req_id]['url']
+    user_dir = f"{DOWNLOAD_DIR}/{callback.from_user.id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
+    # Universal YT-DLP Options
     ydl_opts = {
         'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
         'quiet': True, 'nocheckcertificate': True, 'writethumbnail': True,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
-    if quality == "audio":
+    # Format Selection
+    if action == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
-    elif quality == "720":
-        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
-        ydl_opts['merge_output_format'] = 'mkv'
-    elif quality == "480":
-        ydl_opts['format'] = 'bestvideo[height<=480]+bestaudio/best[height<=480]'
-        ydl_opts['merge_output_format'] = 'mkv'
-    else: 
+    else:
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
-        ydl_opts['merge_output_format'] = 'mkv'
+        ydl_opts['merge_output_format'] = 'mkv' # Safest container
 
     if COOKIES_PATH: ydl_opts['cookiefile'] = COOKIES_PATH
 
     try:
-        await status.edit("⬇️ **Downloading...**")
+        await status.edit("⬇️ **Downloading...**\n`Connecting to Source...`")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req['url'], download=True)
+            info = ydl.extract_info(url, download=True)
             fpath = ydl.prepare_filename(info)
             base = fpath.rsplit(".", 1)[0]
             
+            # Smart Ext Check
             if not os.path.exists(fpath):
-                for ext in [".mkv", ".mp4", ".webm", ".mp3"]:
+                for ext in [".mkv", ".mp4", ".webm", ".mp3", ".m4a"]:
                     if os.path.exists(base + ext):
                         fpath = base + ext
                         break
             
-            if quality != "audio":
-                await status.edit("🏷️ **Metadata...**")
-                subprocess.run(["ffmpeg", "-y", "-i", fpath, "-c", "copy",
-                       "-metadata", f"title={META_TITLE}", "-metadata", f"artist={META_AUTHOR}",
-                       f"{base}_meta.mkv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if os.path.exists(f"{base}_meta.mkv"):
+            # Clean Title
+            clean_title = info.get('title', 'Unknown').replace("_", " ")
+            
+            # Metadata Injection
+            if action != "audio":
+                await status.edit(f"🏷️ **Injecting Metadata...**\n`{AUTHOR_NAME}`")
+                temp_out = f"{base}_meta.mkv"
+                cmd = ["ffmpeg", "-y", "-i", fpath, "-c", "copy",
+                       "-metadata", f"title={clean_title}",
+                       "-metadata", f"artist={AUTHOR_NAME}",
+                       "-metadata", f"author={AUTHOR_NAME}",
+                       temp_out]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if os.path.exists(temp_out):
                     os.remove(fpath)
-                    os.rename(f"{base}_meta.mkv", fpath)
+                    os.rename(temp_out, fpath)
 
             await status.edit("⬆️ **Uploading...**")
             start = time.time()
             thumb = base + ".jpg"
             if not os.path.exists(thumb): thumb = base + ".webp"
             final_thumb = prepare_thumbnail(thumb)
-            w, h, d = get_metadata(fpath)
+            
+            w, h, d = 0, 0, 0
+            if action != "audio":
+                w, h, d = get_metadata(fpath)
             if d == 0: d = info.get('duration', 0)
             
-            if quality == "audio":
-                await app.send_audio(callback.message.chat.id, audio=fpath, title=info.get('title'), thumb=final_thumb, performer=META_AUTHOR, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
-            else:
-                await app.send_video(callback.message.chat.id, video=fpath, caption=f"🎥 **{info.get('title')}**\n👤 {META_AUTHOR}", duration=int(d), width=int(w), height=int(h), thumb=final_thumb, supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
+            caption = f"🎥 **{clean_title}**\n\n👤 **Uploaded By:** {AUTHOR_NAME}\n⚙️ **Source:** Universal"
+            
+            if action == "audio":
+                await app.send_audio(
+                    callback.message.chat.id, audio=fpath, title=clean_title, 
+                    thumb=final_thumb, performer=AUTHOR_NAME, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Audio...**")
+                )
+            elif action == "mirror": # Document Mode
+                await app.send_document(
+                    callback.message.chat.id, document=fpath, thumb=final_thumb, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Doc...**")
+                )
+            else: # Leech Mode (Video)
+                await app.send_video(
+                    callback.message.chat.id, video=fpath, caption=caption,
+                    duration=int(d), width=int(w), height=int(h), thumb=final_thumb,
+                    supports_streaming=True,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Video...**")
+                )
+                
             await status.delete()
-            await callback.message.reply_text("✅ **Completed!**")
+            await callback.message.reply_text("✅ **Completed Successfully!**")
+
     except Exception as e:
-        await status.edit(f"❌ **Error:** {str(e)[:200]}")
+        await status.edit(f"❌ **Error:** `{str(e)[:200]}`")
     
     try: shutil.rmtree(user_dir)
     except: pass
-    if req_id in DOWNLOAD_QUEUE: del DOWNLOAD_QUEUE[req_id]
+    if req_id in user_data: del user_data[req_id]
 
 # --- 7. STARTUP ---
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
+    
     keep_alive()   
     start_pinger() 
-    print("🔥 Bot Started...")
+    
+    print("🔥 Professional Universal Bot Started...")
     try:
         app.run()
     except errors.FloodWait as e:
-        print(f"❌ FLOOD WAIT: {e.value}s. Sleeping...")
+        print(f"❌ FloodWait: {e.value}s. Sleeping...")
         time.sleep(e.value)
         app.run()
 
