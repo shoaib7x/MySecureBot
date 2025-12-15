@@ -1,4 +1,3 @@
-
 pyrogram
 tgcrypto
 yt-dlp
@@ -6,5 +5,4 @@ hachoir
 pillow
 flask
 gunicorn
-python-dotenv
 requests
