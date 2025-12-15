@@ -15,7 +15,7 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. WEB SERVER (24/7 Alive) ---
+# --- 1. WEB SERVER & PINGER (For 24/7 Uptime) ---
 web_app = Flask('')
 
 @web_app.route('/')
@@ -32,7 +32,7 @@ def keep_alive():
 def ping_self():
     while True:
         try:
-            time.sleep(600) 
+            time.sleep(600) # Ping every 10 minutes
             requests.get("http://localhost:8080/")
             print("Ping sent to keep bot alive!")
         except:
@@ -57,12 +57,12 @@ META_TITLE = os.environ.get("METADATA_TITLE", "Downloaded via Bot")
 META_AUTHOR = os.environ.get("METADATA_AUTHOR", "Winning Wonders Hub")
 DOWNLOAD_DIR = "/app/downloads"
 
-# --- SMART COOKIE FINDER (Your specific file) ---
+# --- COOKIE LOGIC (Smart Finder) ---
 COOKIES_PATH = None
 possible_cookies = [
-    "cookie (1).txt", 
-    "cookies.txt", 
-    "/etc/secrets/cookies.txt", 
+    "cookie (1).txt",  # Aapki file ka exact naam
+    "cookies.txt",
+    "/etc/secrets/cookies.txt",
     "/app/cookie (1).txt"
 ]
 
@@ -73,7 +73,7 @@ for c in possible_cookies:
         break
 
 if not COOKIES_PATH:
-    print("⚠️ WARNING: No cookies found! YouTube might block downloads.")
+    print("⚠️ WARNING: No cookies found! Restricted sites may fail.")
 
 # Logging
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
@@ -171,7 +171,10 @@ async def progress_bar(current, total, message, start_time, status_text):
 def get_metadata(file_path):
     try:
         metadata = extractMetadata(createParser(file_path))
-        return (metadata.get("width") or 0, metadata.get("height") or 0, metadata.get("duration").seconds or 0)
+        width = metadata.get("width") if metadata.has("width") else 0
+        height = metadata.get("height") if metadata.has("height") else 0
+        duration = metadata.get("duration").seconds if metadata.has("duration") else 0
+        return width, height, duration
     except: return 0, 0, 0
 
 def prepare_thumbnail(thumb_path):
@@ -183,7 +186,7 @@ def prepare_thumbnail(thumb_path):
         return thumb_path
     except: return None
 
-# --- 5. COMMANDS ---
+# --- 5. COMMAND HANDLERS ---
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     add_user(message.from_user.id)
@@ -192,9 +195,9 @@ async def start_cmd(client, message):
     txt = (
         f"👋 **Hello {message.from_user.first_name}!**\n\n"
         "I am an **Universal Video Downloader Bot**.\n"
-        "I support 1000+ sites with **Cookies Support**.\n"
-        "I run 24/7 on Render Cloud ☁️.\n\n"
-        "🔹 **Dev:** @Winning_Wonders_Hub"
+        "I run 24/7 on Render Cloud ☁️.\n"
+        "🍪 **Cookies:** Active\n\n"
+        "🔹 **Commands:** `/help`"
     )
     await message.reply(txt, quote=True)
 
@@ -204,7 +207,7 @@ async def help_cmd(client, message):
         "📚 **Help Menu**\n\n"
         "**User Commands:**\n"
         "• `/dl <link>` - Download Video\n"
-        "• `/start` - Check Alive Status\n\n"
+        "• `/start` - Check Status\n\n"
         "**Admin Commands:**\n"
         "• `/ban <id>` - Ban User\n"
         "• `/unban <id>` - Unban User\n"
@@ -216,7 +219,7 @@ async def help_cmd(client, message):
 @app.on_message(filters.command("broadcast") & filters.user(OWNERS))
 async def broadcast_cmd(client, message):
     if not message.reply_to_message:
-        return await message.reply("❌ Reply to a message to broadcast it.")
+        return await message.reply("❌ Reply to a message to broadcast.")
     
     msg = await message.reply("🚀 **Broadcasting started...**")
     users = get_all_users()
@@ -228,11 +231,6 @@ async def broadcast_cmd(client, message):
             await message.reply_to_message.copy(uid)
             done += 1
             await asyncio.sleep(0.1) 
-        except errors.FloodWait as e:
-            # Handle FloodWait during broadcast
-            await asyncio.sleep(e.value)
-            await message.reply_to_message.copy(uid)
-            done += 1
         except:
             blocked += 1
             
@@ -268,9 +266,7 @@ async def dl_init(client, message):
     user_id = message.from_user.id
     add_user(user_id)
     
-    if is_banned(user_id):
-        return await message.reply("🚫 **You are banned.**")
-    
+    if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
     # Cooldown
@@ -280,27 +276,25 @@ async def dl_init(client, message):
             if rem > 0:
                 return await message.reply(f"⏳ **Wait {int(rem)} seconds.**")
     
-    # URL Handling
+    # URL Logic
     url = None
     if len(message.command) > 1:
         url = message.command[1]
     elif message.reply_to_message:
         url = message.reply_to_message.text or message.reply_to_message.caption
         
-    if not url:
-        return await message.reply("❌ **Send a link:** `/dl <link>`")
+    if not url: return await message.reply("❌ **Send a link:** `/dl <link>`")
 
     req_id = str(uuid.uuid4())[:8]
     DOWNLOAD_QUEUE[req_id] = {"url": url, "uid": user_id}
     
-    auth_text = "✅ **Auth:** Cookies Loaded" if COOKIES_PATH else "⚠️ **Auth:** No Cookies"
+    auth_text = "✅ Cookies Active" if COOKIES_PATH else "⚠️ No Cookies"
     
     btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌟 Best (MKV)", callback_data=f"q|best|{req_id}")],
-        [InlineKeyboardButton("📺 1080p", callback_data=f"q|1080|{req_id}"),
-         InlineKeyboardButton("📺 720p", callback_data=f"q|720|{req_id}")],
-        [InlineKeyboardButton("📱 480p", callback_data=f"q|480|{req_id}"),
-         InlineKeyboardButton("🎵 Audio", callback_data=f"q|audio|{req_id}")]
+        [InlineKeyboardButton("🌟 Best (MKV)", callback_data=f"q|best|{req_id}"),
+         InlineKeyboardButton("🎵 Audio Only", callback_data=f"q|audio|{req_id}")],
+        [InlineKeyboardButton("📺 720p", callback_data=f"q|720|{req_id}"),
+         InlineKeyboardButton("📱 480p", callback_data=f"q|480|{req_id}")]
     ])
     
     await message.reply(
@@ -313,15 +307,14 @@ async def dl_init(client, message):
 async def process_dl(client, callback):
     _, quality, req_id = callback.data.split("|")
     
-    if req_id not in DOWNLOAD_QUEUE:
-        return await callback.answer("❌ Session Expired.", show_alert=True)
-    
+    if req_id not in DOWNLOAD_QUEUE: return await callback.answer("❌ Expired.", show_alert=True)
     req = DOWNLOAD_QUEUE[req_id]
-    if callback.from_user.id != req['uid']:
+    
+    if req['uid'] != callback.from_user.id:
         return await callback.answer("❌ Not your task!", show_alert=True)
 
     await callback.message.delete()
-    status = await callback.message.reply(f"🔄 **Processing {quality}...**")
+    status = await callback.message.reply(f"🔄 **Processing...**")
     
     if callback.from_user.id not in ADMINS:
         user_cooldowns[callback.from_user.id] = time.time()
@@ -329,7 +322,7 @@ async def process_dl(client, callback):
     user_dir = f"downloads/{callback.from_user.id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
-    # Universal YT-DLP Options with Chrome User Agent
+    # Universal Options
     ydl_opts = {
         'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
         'quiet': True, 'nocheckcertificate': True,
@@ -337,12 +330,10 @@ async def process_dl(client, callback):
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
+    # Format Logic
     if quality == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
-    elif quality == "1080":
-        ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
-        ydl_opts['merge_output_format'] = 'mkv'
     elif quality == "720":
         ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
         ydl_opts['merge_output_format'] = 'mkv'
@@ -369,11 +360,11 @@ async def process_dl(client, callback):
                         fpath = base + ext
                         break
             
+            # Metadata Injection (No re-encoding)
             if quality != "audio":
                 await status.edit(f"🏷️ **Metadata...**")
-                # Metadata Injection (No re-encoding)
                 temp_out = f"{base}_meta.mkv"
-                # Using subprocess to call ffmpeg directly
+                # FFmpeg command
                 subprocess.run([
                     "ffmpeg", "-y", "-i", fpath, "-c", "copy",
                     "-metadata", f"title={META_TITLE}",
@@ -419,12 +410,11 @@ async def process_dl(client, callback):
     except: pass
     if req_id in DOWNLOAD_QUEUE: del DOWNLOAD_QUEUE[req_id]
 
-# --- 7. STARTUP & FLOODWAIT HANDLING ---
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
     
-    # Start Web Server for Render
+    # 24/7 Alive Logic
     keep_alive()   
     start_pinger() 
     
@@ -432,8 +422,7 @@ if __name__ == "__main__":
     try:
         app.run()
     except errors.FloodWait as e:
-        # If FloodWait happens, log it and wait
-        print(f"❌ FLOOD WAIT: {e.value} seconds. Sleeping...")
+        print(f"❌ Sleeping for {e.value}s due to FloodWait")
         time.sleep(e.value)
         app.run()
 
