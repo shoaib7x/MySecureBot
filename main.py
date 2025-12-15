@@ -9,7 +9,6 @@ import threading
 import shutil
 import math
 import requests
-import subprocess
 import re
 from datetime import datetime
 from flask import Flask
@@ -19,12 +18,12 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. WEB SERVER (24/7 UPTIME) ---
+# --- 1. WEB SERVER (For 24/7 Uptime) ---
 web_app = Flask('')
 
 @web_app.route('/')
 def home():
-    return "Service is Running 24/7. Status: Online 🟢"
+    return "Universal Bot Active 24/7! 🚀"
 
 def run_web():
     web_app.run(host='0.0.0.0', port=8080)
@@ -36,61 +35,73 @@ def keep_alive():
 def ping_self():
     while True:
         try:
-            time.sleep(600) # 10 Minutes
+            # Har 5 minute me ping karega
+            time.sleep(300) 
             requests.get("http://localhost:8080/")
+            logging.info("Ping sent to keep bot alive!")
         except: pass
 
 def start_pinger():
     t = threading.Thread(target=ping_self)
     t.start()
 
-# --- 2. CONFIGURATION (SAFE LOAD) ---
-def get_env(name, default=None, is_int=False):
+# --- 2. CONFIGURATION (Load from Env) ---
+# Helper to get Env safely
+def get_env(name, default=None):
     val = os.environ.get(name)
     if not val or val.strip() == "":
         return default
-    return int(val) if is_int else val
+    return val
 
-API_ID = get_env("API_ID", 0, True)
+API_ID = int(get_env("API_ID", 0))
 API_HASH = get_env("API_HASH", "")
 BOT_TOKEN = get_env("BOT_TOKEN", "")
 
-# Branding
+# Admin & Owner Config
+OWNER_IDS = [int(x) for x in get_env("OWNER_IDS", "").split() if x.strip()]
+ADMIN_IDS = [int(x) for x in get_env("ADMIN_IDS", "").split() if x.strip()]
+ADMINS = list(set(ADMIN_IDS + OWNER_IDS))
+
+# Channels & Branding
+FORCE_SUB = get_env("FORCE_SUB_CHANNEL")
+# LOG_CHANNEL fix (handle 0 or None)
+LOG_CHANNEL_STR = get_env("LOG_CHANNEL", "0")
+LOG_CHANNEL = int(LOG_CHANNEL_STR) if LOG_CHANNEL_STR.lstrip('-').isdigit() else 0
+
 AUTHOR_NAME = "@hdhub4uumss"
 AUTHOR_URL = "https://t.me/hdhub4uumss"
 
-# Admins
-OWNERS = [int(x) for x in get_env("OWNER_IDS", "").split() if x.strip()]
-ADMINS = [int(x) for x in get_env("ADMIN_IDS", "").split() if x.strip()]
-ADMINS.extend(OWNERS)
-ADMINS = list(set(ADMINS))
-
-FORCE_SUB = get_env("FORCE_SUB_CHANNEL")
-LOG_CHANNEL = get_env("LOG_CHANNEL", 0, True)
+# Settings
 DOWNLOAD_DIR = "/app/downloads"
+COOKIES_FILE = "cookie (1).txt"
 
-# --- COOKIES LOGIC ---
-COOKIES_PATH = None
-possible_cookies = ["cookie (1).txt", "cookies.txt", "/etc/secrets/cookies.txt"]
-for c in possible_cookies:
-    if os.path.exists(c):
-        COOKIES_PATH = c
-        break
-
-# Logging
-logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
+# --- 3. LOGGING & CLIENT ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = Client("pro_bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Check Cookie
+if not os.path.exists(COOKIES_FILE):
+    logger.warning(f"⚠️ ERROR: {COOKIES_FILE} not found! Upload it to GitHub.")
+else:
+    logger.info(f"✅ Cookies File Found: {COOKIES_FILE}")
 
-user_data = {}
+app = Client("universal_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# Global State
+user_data = {} 
+user_cooldowns = {}
+COOLDOWN_SECONDS = 30 # Reduced cooldown
+
+# --- 4. DATABASE (SQLite) ---
 DB_NAME = "bot_data.db"
 
-# --- 3. DATABASE ENGINE ---
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
     c.execute("CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY)")
     conn.commit()
     conn.close()
@@ -98,7 +109,7 @@ def init_db():
 def add_user(user_id):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     try:
-        conn.cursor().execute("INSERT OR IGNORE INTO users (user_id, join_date) VALUES (?, ?)", (user_id, str(datetime.now())))
+        conn.cursor().execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
         conn.commit()
     except: pass
     conn.close()
@@ -127,7 +138,7 @@ def get_all_users():
     conn.close()
     return users
 
-# --- 4. PROFESSIONAL HELPERS ---
+# --- 5. HELPER FUNCTIONS ---
 
 def humanbytes(size):
     if not size: return "0B"
@@ -159,15 +170,14 @@ async def progress_bar(current, total, message, start_time, status_text):
             percentage = current * 100 / total
             eta = (total - current) / speed if speed > 0 else 0
             
-            # Professional Bar
             bar_len = 10
             filled = int(percentage / 100 * bar_len)
-            bar = '■' * filled + '□' * (bar_len - filled)
+            bar = '⬢' * filled + '⬡' * (bar_len - filled)
             
             msg = (
-                f"**{status_text}**\n"
-                f"**Progress:** `[{bar}]` {round(percentage, 1)}%\n"
-                f"**Done:** `{humanbytes(current)}` / `{humanbytes(total)}`\n"
+                f"**{status_text}**\n\n"
+                f"**Progress:** `{bar}` {round(percentage, 1)}%\n"
+                f"**Processed:** `{humanbytes(current)}` / `{humanbytes(total)}`\n"
                 f"**Speed:** `{humanbytes(speed)}/s`\n"
                 f"**ETA:** `{time_formatter(eta * 1000)}`"
             )
@@ -178,6 +188,7 @@ async def handle_force_sub(client, message):
     if not FORCE_SUB: return True
     user_id = message.from_user.id
     if user_id in ADMINS: return True
+    
     try:
         chat_id = int(FORCE_SUB) if str(FORCE_SUB).startswith("-100") else FORCE_SUB
         await client.get_chat_member(chat_id, user_id)
@@ -186,8 +197,13 @@ async def handle_force_sub(client, message):
         try:
             chat_id = int(FORCE_SUB) if str(FORCE_SUB).startswith("-100") else FORCE_SUB
             invite = await client.export_chat_invite_link(chat_id)
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=invite)]])
-            await message.reply(f"👋 **Hello {message.from_user.first_name}!**\n\nPlease join our channel to use this bot.", reply_markup=btn)
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Update Channel", url=invite)]])
+            await message.reply(
+                f"👋 **Hello {message.from_user.mention}!**\n\n"
+                "Please join our update channel to use this bot.\n"
+                "This is required to keep the bot free for everyone.",
+                reply_markup=btn
+            )
             return False
         except: return True
     except: return True
@@ -195,7 +211,10 @@ async def handle_force_sub(client, message):
 def get_metadata(file_path):
     try:
         metadata = extractMetadata(createParser(file_path))
-        return (metadata.get("width") or 0, metadata.get("height") or 0, metadata.get("duration").seconds or 0)
+        width = metadata.get("width") if metadata.has("width") else 0
+        height = metadata.get("height") if metadata.has("height") else 0
+        duration = metadata.get("duration").seconds if metadata.has("duration") else 0
+        return width, height, duration
     except: return 0, 0, 0
 
 def prepare_thumbnail(thumb_path):
@@ -207,77 +226,92 @@ def prepare_thumbnail(thumb_path):
         return thumb_path
     except: return None
 
-# --- 5. COMMANDS ---
+# --- 6. COMMANDS (User & Admin) ---
 
 @app.on_message(filters.command("start"))
-async def start_cmd(client, message):
+async def start_handler(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
     
     txt = (
-        f"**👋 Hello {message.from_user.mention},**\n\n"
-        "I am an **Advanced Universal File Downloader**.\n"
-        "I can download media from **YouTube, Instagram, X, TikTok**, and direct links.\n\n"
+        f"👋 **Hello {message.from_user.mention}!**\n\n"
+        "I am an **Universal File Downloader Bot**.\n"
+        "I can download content from **YouTube, Instagram, X, TikTok**, and direct links.\n\n"
         "**Features:**\n"
-        "⚡ Fast Speed Leeching\n"
-        "📂 Document & Video Mode\n"
-        "🏷️ Custom Metadata Support\n\n"
-        f"👤 **Maintained By:** {AUTHOR_NAME}"
+        "✅ High Speed Downloads\n"
+        "✅ Custom Metadata Support\n"
+        "✅ Ad-Bypass Technology\n"
+        "✅ 4K & MKV Support\n\n"
+        f"👤 **Author:** [{AUTHOR_NAME}]({AUTHOR_URL})"
     )
-    btns = InlineKeyboardMarkup([[InlineKeyboardButton("ℹ️ About", callback_data="about"), InlineKeyboardButton("🆘 Help", callback_data="help")]])
+    
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Help", callback_data="help_menu"),
+         InlineKeyboardButton("ℹ️ About", callback_data="about_menu")]
+    ])
     await message.reply(txt, quote=True, reply_markup=btns, disable_web_page_preview=True)
 
-@app.on_callback_query(filters.regex("help"))
-async def help_cb(client, callback):
+@app.on_callback_query(filters.regex("help_menu"))
+async def help_callback(client, callback):
     txt = (
-        "**📚 Help Menu**\n\n"
+        "📚 **Help Menu**\n\n"
         "**How to use:**\n"
-        "• Send any video link to download.\n"
-        "• Select your preferred format.\n\n"
-        "**Admin Commands:**\n"
-        "• `/broadcast <reply>` - Send message to all users.\n"
-        "• `/ban <user_id>` - Ban a user.\n"
-        "• `/unban <user_id>` - Unban a user.\n"
-        "• `/log` - Get bot log file.\n\n"
-        "**Powered by:** " + AUTHOR_NAME
+        "Simply send any link (YouTube, Insta, etc.) to the bot.\n\n"
+        "**Commands:**\n"
+        "• `/start` - Restart Bot\n"
+        "• `/dl <link>` - Force Download\n"
+        "• `/cancel` - Cancel current task\n\n"
+        "**Supported:** 1000+ Websites\n"
+        "**Bot Author:** " + AUTHOR_NAME
     )
-    await callback.message.edit(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="start")]]))
+    await callback.message.edit(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="start_menu")]]))
 
-@app.on_callback_query(filters.regex("start"))
-async def start_cb(client, callback):
-    await start_cmd(client, callback.message)
+@app.on_callback_query(filters.regex("start_menu"))
+async def back_to_start(client, callback):
+    # Same as start command text
+    txt = f"👋 **Hello {callback.from_user.mention}!**\n\nReady to download files."
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton("📚 Help", callback_data="help_menu")]])
+    await callback.message.edit(txt, reply_markup=btns)
 
 # --- ADMIN COMMANDS ---
 @app.on_message(filters.command("broadcast") & filters.user(OWNERS))
-async def broadcast(client, message):
-    if not message.reply_to_message: return await message.reply("❌ **Error:** Reply to a message to broadcast.")
-    msg = await message.reply("🚀 **Broadcasting...**")
+async def broadcast_handler(client, message):
+    if not message.reply_to_message:
+        return await message.reply("❌ **Error:** Please reply to a message to broadcast.")
+    
+    status = await message.reply("🚀 **Processing Broadcast...**")
     users = get_all_users()
     done, blocked = 0, 0
+    
     for uid in users:
         try:
             await message.reply_to_message.copy(uid)
             done += 1
             await asyncio.sleep(0.1)
-        except: blocked += 1
-    await msg.edit(f"✅ **Broadcast Completed**\n\nSent: `{done}`\nFailed: `{blocked}`")
+        except errors.FloodWait as e:
+            await asyncio.sleep(e.value)
+            try: await message.reply_to_message.copy(uid); done+=1
+            except: blocked+=1
+        except: blocked+=1
+            
+    await status.edit(f"✅ **Broadcast Completed**\n\n📢 Sent: `{done}`\n🚫 Failed: `{blocked}`")
 
 @app.on_message(filters.command("ban") & filters.user(ADMINS))
-async def ban(client, message):
+async def ban_handler(client, message):
     try:
         uid = int(message.command[1])
-        if uid in ADMINS: return await message.reply("❌ Cannot ban Admin.")
+        if uid in ADMINS: return await message.reply("❌ Cannot ban an Admin.")
         ban_user_db(uid)
-        await message.reply(f"🚫 **User {uid} Banned.**")
-    except: await message.reply("❌ Usage: `/ban <id>`")
+        await message.reply(f"🚫 **User {uid} has been Banned.**")
+    except: await message.reply("❌ **Usage:** `/ban <user_id>`")
 
 @app.on_message(filters.command("unban") & filters.user(ADMINS))
-async def unban(client, message):
+async def unban_handler(client, message):
     try:
         uid = int(message.command[1])
         unban_user_db(uid)
-        await message.reply(f"✅ **User {uid} Unbanned.**")
-    except: await message.reply("❌ Usage: `/unban <id>`")
+        await message.reply(f"✅ **User {uid} has been Unbanned.**")
+    except: await message.reply("❌ **Usage:** `/unban <user_id>`")
 
 @app.on_message(filters.command("log") & filters.user(OWNERS))
 async def log(client, message):
@@ -288,33 +322,46 @@ async def log(client, message):
 async def add_admin(client, message):
     await message.reply("ℹ️ To add Admins, please add their IDs to the `ADMIN_IDS` variable in Render settings.", quote=True)
 
-# --- 6. UNIVERSAL DOWNLOADER LOGIC ---
+# --- 7. DOWNLOADER LOGIC (Correctly Handled) ---
 
+# This handles BOTH text messages with links AND /dl commands
 @app.on_message(filters.regex(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+") | filters.command(["dl", "download"]))
 async def link_handler(client, message):
     user_id = message.from_user.id
     add_user(user_id)
+    
     if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    url = message.text
-    if message.command and len(message.command) > 1: url = message.command[1]
-    
+    # Logic to get URL correctly
+    url = None
+    if message.command: # If called via /dl command
+        if len(message.command) > 1:
+            url = message.command[1]
+        elif message.reply_to_message:
+            url = message.reply_to_message.text or message.reply_to_message.caption
+    else: # If just a link is sent
+        url = message.text
+        
+    if not url:
+        return await message.reply("❌ **Error:** No link found. Send a link or reply to one.")
+
     req_id = str(uuid.uuid4())[:8]
     user_data[req_id] = {"url": url, "uid": user_id}
     
-    auth_status = "✅ Cookies" if COOKIES_PATH else "⚠️ No Auth"
+    # Cookie Status
+    auth_status = "✅ Cookies" if os.path.exists(COOKIES_FILE) else "⚠️ No Auth"
     
     # PROFESSIONAL BUTTONS LAYOUT
     btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Leech (Video)", callback_data=f"dl|leech|{req_id}"),
+        [InlineKeyboardButton("🎥 Leech (Video)", callback_data=f"dl|leech|{req_id}"),
          InlineKeyboardButton("📂 Mirror (Doc)", callback_data=f"dl|mirror|{req_id}")],
         [InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl|audio|{req_id}"),
          InlineKeyboardButton("❌ Cancel", callback_data=f"dl|cancel|{req_id}")]
     ])
     
     await message.reply(
-        f"🔗 **Link Received**\n`{url}`\n\n🛡️ **Status:** {auth_status}\n👇 **Select Action:**",
+        f"🔗 **Link Detected**\n`{url}`\n\n🛡️ **Status:** {auth_status}\n👇 **Select Action:**",
         reply_markup=btns,
         quote=True,
         disable_web_page_preview=True
@@ -328,54 +375,60 @@ async def process_dl(client, callback):
         return await callback.answer("❌ Task Expired.", show_alert=True)
     
     if user_data[req_id]['uid'] != callback.from_user.id:
-        return await callback.answer("❌ Not your task!", show_alert=True)
+        return await callback.answer("❌ This is not your task!", show_alert=True)
 
     if action == "cancel":
         del user_data[req_id]
         await callback.message.delete()
-        return
+        return await callback.answer("Cancelled.")
 
     await callback.message.delete()
     status = await callback.message.reply("🔄 **Processing Request...**")
     
     url = user_data[req_id]['url']
-    user_dir = f"{DOWNLOAD_DIR}/{callback.from_user.id}"
+    # Use user specific folder to avoid conflicts
+    user_dir = f"{DOWNLOAD_DIR}/{callback.from_user.id}_{req_id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
     # Universal YT-DLP Options
     ydl_opts = {
-        'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
-        'quiet': True, 'nocheckcertificate': True, 'writethumbnail': True,
+        'outtmpl': f"{user_dir}/%(title)s.%(ext)s", # Clean filename
+        'quiet': True,
+        'nocheckcertificate': True,
+        'writethumbnail': True,
+        # Fake Chrome User Agent
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
-    # Format Selection
     if action == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
     else:
+        # Best Video + Best Audio -> MKV
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
         ydl_opts['merge_output_format'] = 'mkv' # Safest container
 
-    if COOKIES_PATH: ydl_opts['cookiefile'] = COOKIES_PATH
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         await status.edit("⬇️ **Downloading...**\n`Connecting to Source...`")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            fpath = ydl.prepare_filename(info)
-            base = fpath.rsplit(".", 1)[0]
+            # Find the file in the directory
+            files = os.listdir(user_dir)
+            fpath = None
+            for f in files:
+                if f.endswith(('.mkv', '.mp4', '.webm', '.mp3', '.m4a')):
+                    fpath = os.path.join(user_dir, f)
+                    break
             
-            # Smart Ext Check
-            if not os.path.exists(fpath):
-                for ext in [".mkv", ".mp4", ".webm", ".mp3", ".m4a"]:
-                    if os.path.exists(base + ext):
-                        fpath = base + ext
-                        break
-            
+            if not fpath: raise Exception("File Not Found after download")
+
             # Clean Title
-            clean_title = info.get('title', 'Unknown').replace("_", " ")
-            
+            clean_title = info.get('title', 'Video').replace("_", " ")
+            base = fpath.rsplit(".", 1)[0]
+
             # Metadata Injection
             if action != "audio":
                 await status.edit(f"🏷️ **Injecting Metadata...**\n`{AUTHOR_NAME}`")
@@ -392,8 +445,13 @@ async def process_dl(client, callback):
 
             await status.edit("⬆️ **Uploading...**")
             start = time.time()
-            thumb = base + ".jpg"
-            if not os.path.exists(thumb): thumb = base + ".webp"
+            
+            # Thumbnail Logic
+            thumb = None
+            for t in [f"{base}.jpg", f"{base}.webp"]:
+                if os.path.exists(t):
+                    thumb = t
+                    break
             final_thumb = prepare_thumbnail(thumb)
             
             w, h, d = 0, 0, 0
@@ -432,7 +490,7 @@ async def process_dl(client, callback):
     except: pass
     if req_id in user_data: del user_data[req_id]
 
-# --- 7. STARTUP ---
+# --- 8. STARTUP ---
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
@@ -440,7 +498,7 @@ if __name__ == "__main__":
     keep_alive()   
     start_pinger() 
     
-    print("🔥 Professional Universal Bot Started...")
+    print("🔥 Universal Bot Started...")
     try:
         app.run()
     except errors.FloodWait as e:
