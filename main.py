@@ -14,7 +14,7 @@ from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from web_server import keep_alive, start_pinger
 
-# --- CONFIGURATION (Render Env se aayega) ---
+# --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -23,9 +23,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
+# Credentials Check
 if API_ID == 0 or not BOT_TOKEN:
-    logger.error("❌ CRITICAL ERROR: Token missing!")
+    logger.error("❌ CRITICAL ERROR: Token or API_ID missing! Check Render Environment Variables.")
 
+# Admins & Owners
 OWNERS = [int(x) for x in os.environ.get("OWNER_IDS", "").split() if x.strip()]
 ADMINS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split() if x.strip()]
 ADMINS.extend(OWNERS)
@@ -37,11 +39,10 @@ META_TITLE = os.environ.get("METADATA_TITLE", "Downloaded via Bot")
 META_AUTHOR = os.environ.get("METADATA_AUTHOR", "Winning Wonders Hub")
 DOWNLOAD_DIR = "/app/downloads"
 
-# --- SMART COOKIE FINDER (Fixed) ---
-# Render Secret Files aksar /etc/secrets/ mein hoti hain
-# Ya agar aapne repo mein upload ki hai to root mein hogi
+# --- SMART COOKIE FINDER ---
+# This logic finds your uploaded cookie file automatically
 possible_paths = [
-    "cookie (1).txt",  # Aapki file ka naam
+    "cookie (1).txt",  # Exact name you provided
     "cookies.txt",
     "/etc/secrets/cookies.txt",
     "/etc/secrets/cookie (1).txt",
@@ -102,7 +103,7 @@ def get_all_users():
     conn.close()
     return users
 
-# --- HELPERS ---
+# --- HELPER FUNCTIONS ---
 async def handle_force_sub(client, message):
     if not FORCE_SUB: return True
     user_id = message.from_user.id
@@ -158,16 +159,16 @@ def prepare_thumbnail(thumb_path):
         return thumb_path
     except: return None
 
-# --- COMMANDS ---
+# --- COMMAND HANDLERS ---
 @app.on_message(filters.command("start"))
 async def start(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
-    await message.reply(f"👋 **Hi {message.from_user.first_name}!**\nBot is Live & Secure! 🔒\nSend link to download.", quote=True)
+    await message.reply(f"👋 **Hi {message.from_user.first_name}!**\nBot is Live & 24/7! 🔒\nSend a link to download.", quote=True)
 
 @app.on_message(filters.command("help"))
 async def help(client, message):
-    txt = "**Commands:**\n/start - Check Alive\n/dl <link> - Download\n\n**Admin:**\n/ban <id>\n/unban <id>\n/broadcast <reply>\n/log - Get Files"
+    txt = "**Commands:**\n/dl <link> - Download\n/start - Check Status\n\n**Admin:**\n/ban <id>\n/unban <id>\n/broadcast <reply>\n/log - DB File"
     await message.reply(txt, quote=True)
 
 @app.on_message(filters.command("broadcast") & filters.user(OWNERS))
@@ -190,7 +191,7 @@ async def ban(client, message):
         uid = int(message.command[1])
         ban_user_db(uid)
         await message.reply(f"🚫 Banned {uid}")
-    except: await message.reply("/ban UserID")
+    except: await message.reply("Usage: /ban UserID")
 
 @app.on_message(filters.command("unban") & filters.user(ADMINS))
 async def unban(client, message):
@@ -198,15 +199,15 @@ async def unban(client, message):
         uid = int(message.command[1])
         unban_user_db(uid)
         await message.reply(f"✅ Unbanned {uid}")
-    except: await message.reply("/unban UserID")
+    except: await message.reply("Usage: /unban UserID")
 
 @app.on_message(filters.command("log") & filters.user(OWNERS))
 async def log_cmd(client, message):
     try:
         await message.reply_document(DB_NAME)
-    except: await message.reply("No DB found.")
+    except: await message.reply("No Data found.")
 
-# --- DOWNLOADER ---
+# --- DOWNLOADER HANDLER ---
 @app.on_message(filters.command(["dl", "download"]))
 async def dl_cmd(client, message):
     user_id = message.from_user.id
@@ -214,13 +215,19 @@ async def dl_cmd(client, message):
     if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    url = message.command[1] if len(message.command) > 1 else (message.reply_to_message.text if message.reply_to_message else None)
+    # URL Logic
+    url = None
+    if len(message.command) > 1:
+        url = message.command[1]
+    elif message.reply_to_message:
+        url = message.reply_to_message.text or message.reply_to_message.caption
+    
     if not url: return await message.reply("❌ Send Link.")
 
     req_id = str(uuid.uuid4())[:8]
     DOWNLOAD_QUEUE[req_id] = {"url": url, "uid": user_id}
     
-    # Cookie Status Check
+    # Check Auth
     auth_status = "✅ Cookies Active" if COOKIES_PATH else "⚠️ Cookies Missing"
     
     btns = InlineKeyboardMarkup([
@@ -243,6 +250,7 @@ async def process_dl(client, callback):
     user_dir = f"downloads/{callback.from_user.id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
+    # yt-dlp Configuration
     ydl_opts = {
         'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
         'quiet': True, 
@@ -257,7 +265,7 @@ async def process_dl(client, callback):
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
 
-    # Attach Cookies
+    # IMPORTANT: Attach the found cookies file
     if COOKIES_PATH:
         ydl_opts['cookiefile'] = COOKIES_PATH
 
@@ -268,7 +276,7 @@ async def process_dl(client, callback):
             fpath = ydl.prepare_filename(info)
             base = fpath.rsplit(".", 1)[0]
             
-            # Smart extension fix
+            # Ensure correct extension detection
             if not os.path.exists(fpath):
                 if os.path.exists(base + ".mkv"): fpath = base + ".mkv"
                 elif os.path.exists(base + ".mp3"): fpath = base + ".mp3"
@@ -307,8 +315,15 @@ async def process_dl(client, callback):
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
+    
+    # 1. Start Fake Web Server (To satisfy Render)
     keep_alive()
+    
+    # 2. Start Self Pinger (To keep it awake)
     start_pinger()
+    
+    # 3. Run Bot
+    print("🔥 Bot Started...")
     app.run()
 
 
