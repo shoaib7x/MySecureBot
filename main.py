@@ -8,6 +8,7 @@ import logging
 import threading
 import shutil
 import requests
+import subprocess
 from flask import Flask
 from PIL import Image
 from hachoir.metadata import extractMetadata
@@ -15,7 +16,7 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. WEB SERVER & PINGER (For 24/7 Uptime) ---
+# --- 1. WEB SERVER (For 24/7 Uptime) ---
 web_app = Flask('')
 
 @web_app.route('/')
@@ -57,15 +58,11 @@ META_TITLE = os.environ.get("METADATA_TITLE", "Downloaded via Bot")
 META_AUTHOR = os.environ.get("METADATA_AUTHOR", "Winning Wonders Hub")
 DOWNLOAD_DIR = "/app/downloads"
 
-# --- COOKIE LOGIC (Smart Finder) ---
+# --- COOKIE LOGIC ---
 COOKIES_PATH = None
 possible_cookies = [
-    "cookie (1).txt",  # Aapki file ka exact naam
-    "cookies.txt",
-    "/etc/secrets/cookies.txt",
-    "/app/cookie (1).txt"
+    "cookie (1).txt", "cookies.txt", "/etc/secrets/cookies.txt", "/app/cookie (1).txt"
 ]
-
 for c in possible_cookies:
     if os.path.exists(c):
         COOKIES_PATH = c
@@ -130,7 +127,6 @@ async def handle_force_sub(client, message):
     if not FORCE_SUB: return True
     user_id = message.from_user.id
     if user_id in ADMINS: return True
-    
     try:
         chat_id = int(FORCE_SUB) if str(FORCE_SUB).startswith("-100") else FORCE_SUB
         await client.get_chat_member(chat_id, user_id)
@@ -153,28 +149,15 @@ async def progress_bar(current, total, message, start_time, status_text):
             speed = current / diff if diff > 0 else 0
             percentage = current * 100 / total
             eta = (total - current) / speed if speed > 0 else 0
-            
-            bar_len = 10
-            filled = int(percentage / 100 * bar_len)
-            bar = '▰' * filled + '▱' * (bar_len - filled)
-            
-            msg = (
-                f"{status_text}\n\n"
-                f"**Progress:** {bar} {round(percentage, 1)}%\n"
-                f"**Size:** `{round(current/1048576, 2)}MB` / `{round(total/1048576, 2)}MB`\n"
-                f"**Speed:** `{round(speed/1048576, 2)} MB/s`\n"
-                f"**ETA:** `{int(eta)}s`"
-            )
+            bar = '▰' * int(percentage / 100 * 12) + '▱' * (12 - int(percentage / 100 * 12))
+            msg = f"{status_text}\n\n**{bar}** {round(percentage, 1)}%\n💾 `{round(current/1048576, 2)}MB` / `{round(total/1048576, 2)}MB`\n🚀 `{round(speed/1048576, 2)} MB/s` | ⏳ `{int(eta)}s`"
             await message.edit(msg)
     except: pass
 
 def get_metadata(file_path):
     try:
         metadata = extractMetadata(createParser(file_path))
-        width = metadata.get("width") if metadata.has("width") else 0
-        height = metadata.get("height") if metadata.has("height") else 0
-        duration = metadata.get("duration").seconds if metadata.has("duration") else 0
-        return width, height, duration
+        return (metadata.get("width") or 0, metadata.get("height") or 0, metadata.get("duration").seconds or 0)
     except: return 0, 0, 0
 
 def prepare_thumbnail(thumb_path):
@@ -186,143 +169,106 @@ def prepare_thumbnail(thumb_path):
         return thumb_path
     except: return None
 
-# --- 5. COMMAND HANDLERS ---
+# --- 5. COMMANDS ---
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
+    auth_status = "✅ Active" if COOKIES_PATH else "⚠️ Inactive"
     
     txt = (
         f"👋 **Hello {message.from_user.first_name}!**\n\n"
-        "I am an **Universal Video Downloader Bot**.\n"
-        "I run 24/7 on Render Cloud ☁️.\n"
-        "🍪 **Cookies:** Active\n\n"
-        "🔹 **Commands:** `/help`"
+        "I am an **Universal Video Downloader**.\n"
+        "I support 1000+ sites (YT, Insta, X, etc).\n"
+        f"🍪 **Cookies:** {auth_status}\n\n"
+        "🔹 **Use:** Send any link to download."
     )
     await message.reply(txt, quote=True)
 
 @app.on_message(filters.command("help"))
 async def help_cmd(client, message):
-    txt = (
-        "📚 **Help Menu**\n\n"
-        "**User Commands:**\n"
-        "• `/dl <link>` - Download Video\n"
-        "• `/start` - Check Status\n\n"
-        "**Admin Commands:**\n"
-        "• `/ban <id>` - Ban User\n"
-        "• `/unban <id>` - Unban User\n"
-        "• `/broadcast <reply>` - Send Message to All\n"
-        "• `/log` - Get Database File"
-    )
+    txt = "**User:**\n/dl <link> - Download\n/start - Check\n\n**Admin:**\n/ban <id>\n/unban <id>\n/broadcast <reply>\n/log - DB File"
     await message.reply(txt, quote=True)
 
 @app.on_message(filters.command("broadcast") & filters.user(OWNERS))
 async def broadcast_cmd(client, message):
-    if not message.reply_to_message:
-        return await message.reply("❌ Reply to a message to broadcast.")
-    
-    msg = await message.reply("🚀 **Broadcasting started...**")
+    if not message.reply_to_message: return await message.reply("Reply to a message!")
+    msg = await message.reply("🚀 Sending...")
     users = get_all_users()
     done = 0
     blocked = 0
-    
     for uid in users:
         try:
             await message.reply_to_message.copy(uid)
             done += 1
-            await asyncio.sleep(0.1) 
-        except:
-            blocked += 1
-            
-    await msg.edit(f"✅ **Broadcast Completed!**\n\nSent: {done}\nBlocked/Failed: {blocked}")
+            await asyncio.sleep(0.1)
+        except errors.FloodWait as e:
+            await asyncio.sleep(e.value)
+            try: await message.reply_to_message.copy(uid); done+=1
+            except: blocked+=1
+        except: blocked += 1
+    await msg.edit(f"✅ **Broadcast Done!**\nSent: {done}\nFailed: {blocked}")
 
 @app.on_message(filters.command("ban") & filters.user(ADMINS))
 async def ban_cmd(client, message):
-    if len(message.command) < 2: return await message.reply("❌ Usage: `/ban UserID`")
     try:
         uid = int(message.command[1])
-        if uid in ADMINS: return await message.reply("❌ Cannot ban an Admin.")
         ban_user_db(uid)
-        await message.reply(f"🚫 **User {uid} has been Banned.**")
-    except: await message.reply("❌ Invalid User ID.")
+        await message.reply(f"🚫 Banned {uid}")
+    except: await message.reply("Usage: /ban UserID")
 
 @app.on_message(filters.command("unban") & filters.user(ADMINS))
 async def unban_cmd(client, message):
-    if len(message.command) < 2: return await message.reply("❌ Usage: `/unban UserID`")
     try:
         uid = int(message.command[1])
         unban_user_db(uid)
-        await message.reply(f"✅ **User {uid} has been Unbanned.**")
-    except: await message.reply("❌ Invalid User ID.")
+        await message.reply(f"✅ Unbanned {uid}")
+    except: await message.reply("Usage: /unban UserID")
 
 @app.on_message(filters.command("log") & filters.user(OWNERS))
 async def log_cmd(client, message):
     if os.path.exists(DB_NAME): await message.reply_document(DB_NAME)
-    else: await message.reply("❌ No database found.")
+    else: await message.reply("No Data.")
 
-# --- 6. DOWNLOAD HANDLER ---
+# --- 6. DOWNLOAD HANDLER (ALL BUTTONS WORKING) ---
 @app.on_message(filters.command(["dl", "download"]))
 async def dl_init(client, message):
     user_id = message.from_user.id
     add_user(user_id)
-    
     if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    # Cooldown
-    if user_id not in ADMINS:
-        if user_id in user_cooldowns:
-            rem = COOLDOWN_SECONDS - (time.time() - user_cooldowns[user_id])
-            if rem > 0:
-                return await message.reply(f"⏳ **Wait {int(rem)} seconds.**")
-    
-    # URL Logic
     url = None
-    if len(message.command) > 1:
-        url = message.command[1]
-    elif message.reply_to_message:
-        url = message.reply_to_message.text or message.reply_to_message.caption
-        
-    if not url: return await message.reply("❌ **Send a link:** `/dl <link>`")
+    if len(message.command) > 1: url = message.command[1]
+    elif message.reply_to_message: url = message.reply_to_message.text or message.reply_to_message.caption
+    
+    if not url: return await message.reply("❌ Send Link.")
 
     req_id = str(uuid.uuid4())[:8]
     DOWNLOAD_QUEUE[req_id] = {"url": url, "uid": user_id}
     
-    auth_text = "✅ Cookies Active" if COOKIES_PATH else "⚠️ No Cookies"
-    
+    # 4 WORKING BUTTONS
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("🌟 Best (MKV)", callback_data=f"q|best|{req_id}"),
-         InlineKeyboardButton("🎵 Audio Only", callback_data=f"q|audio|{req_id}")],
-        [InlineKeyboardButton("📺 720p", callback_data=f"q|720|{req_id}"),
-         InlineKeyboardButton("📱 480p", callback_data=f"q|480|{req_id}")]
+         InlineKeyboardButton("📺 720p", callback_data=f"q|720|{req_id}")],
+        [InlineKeyboardButton("📱 480p", callback_data=f"q|480|{req_id}"),
+         InlineKeyboardButton("🎵 Audio", callback_data=f"q|audio|{req_id}")]
     ])
-    
-    await message.reply(
-        f"🎬 **Download Manager**\n\n🔗 **Link:** `{url}`\n{auth_text}",
-        reply_markup=btns,
-        disable_web_page_preview=True
-    )
+    await message.reply(f"🎬 **Download Manager**\nLink: `{url}`", reply_markup=btns)
 
 @app.on_callback_query(filters.regex(r"^q\|"))
 async def process_dl(client, callback):
     _, quality, req_id = callback.data.split("|")
-    
-    if req_id not in DOWNLOAD_QUEUE: return await callback.answer("❌ Expired.", show_alert=True)
+    if req_id not in DOWNLOAD_QUEUE: return await callback.answer("❌ Expired.")
     req = DOWNLOAD_QUEUE[req_id]
     
-    if req['uid'] != callback.from_user.id:
-        return await callback.answer("❌ Not your task!", show_alert=True)
-
     await callback.message.delete()
-    status = await callback.message.reply(f"🔄 **Processing...**")
+    status = await callback.message.reply("🔄 **Starting...**")
     
-    if callback.from_user.id not in ADMINS:
-        user_cooldowns[callback.from_user.id] = time.time()
-        
     user_dir = f"downloads/{callback.from_user.id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
-    # Universal Options
+    # Common Options
     ydl_opts = {
         'outtmpl': f"{user_dir}/{req_id}_%(title)s.%(ext)s",
         'quiet': True, 'nocheckcertificate': True,
@@ -330,7 +276,7 @@ async def process_dl(client, callback):
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
-    # Format Logic
+    # --- Format Logic ---
     if quality == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
@@ -360,19 +306,15 @@ async def process_dl(client, callback):
                         fpath = base + ext
                         break
             
-            # Metadata Injection (No re-encoding)
             if quality != "audio":
-                await status.edit(f"🏷️ **Metadata...**")
+                await status.edit("🏷️ **Metadata...**")
+                # Metadata Injection
                 temp_out = f"{base}_meta.mkv"
-                # FFmpeg command
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", fpath, "-c", "copy",
-                    "-metadata", f"title={META_TITLE}",
-                    "-metadata", f"artist={META_AUTHOR}",
-                    "-metadata", f"author={META_AUTHOR}",
-                    temp_out
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
+                cmd = ["ffmpeg", "-y", "-i", fpath, "-c", "copy",
+                       "-metadata", f"title={META_TITLE}",
+                       "-metadata", f"artist={META_AUTHOR}",
+                       temp_out]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if os.path.exists(temp_out):
                     os.remove(fpath)
                     os.rename(temp_out, fpath)
@@ -382,27 +324,14 @@ async def process_dl(client, callback):
             thumb = base + ".jpg"
             if not os.path.exists(thumb): thumb = base + ".webp"
             final_thumb = prepare_thumbnail(thumb)
-            
-            w, h, d = 0, 0, 0
-            if quality != "audio":
-                w, h, d = get_metadata(fpath)
+            w, h, d = get_metadata(fpath)
             if d == 0: d = info.get('duration', 0)
             
             if quality == "audio":
-                await app.send_audio(
-                    callback.message.chat.id, audio=fpath, title=info.get('title'), 
-                    thumb=final_thumb, performer=META_AUTHOR, 
-                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**")
-                )
+                await app.send_audio(callback.message.chat.id, audio=fpath, title=info.get('title'), thumb=final_thumb, performer=META_AUTHOR, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
             else:
-                await app.send_video(
-                    callback.message.chat.id, video=fpath, caption=f"🎥 **{info.get('title')}**\n👤 {META_AUTHOR}", 
-                    duration=int(d), width=int(w), height=int(h), thumb=final_thumb,
-                    supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**")
-                )
+                await app.send_video(callback.message.chat.id, video=fpath, caption=f"🎥 **{info.get('title')}**\n👤 {META_AUTHOR}", duration=int(d), width=int(w), height=int(h), thumb=final_thumb, supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading...**"))
             await status.delete()
-            await callback.message.reply_text("✅ **Completed!**")
-
     except Exception as e:
         await status.edit(f"❌ **Error:** {str(e)[:200]}")
     
@@ -410,11 +339,11 @@ async def process_dl(client, callback):
     except: pass
     if req_id in DOWNLOAD_QUEUE: del DOWNLOAD_QUEUE[req_id]
 
+# --- 7. STARTUP & FLOODWAIT ---
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
     
-    # 24/7 Alive Logic
     keep_alive()   
     start_pinger() 
     
@@ -422,7 +351,7 @@ if __name__ == "__main__":
     try:
         app.run()
     except errors.FloodWait as e:
-        print(f"❌ Sleeping for {e.value}s due to FloodWait")
+        print(f"❌ FLOOD WAIT: {e.value}s. Sleeping...")
         time.sleep(e.value)
         app.run()
 
