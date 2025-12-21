@@ -19,7 +19,7 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. CONFIGURATION CLASS (Fixes Scope Issues) ---
+# --- 1. CONFIGURATION CLASS (Robust) ---
 class Config:
     def get_env(name, default=None, is_int=False):
         val = os.environ.get(name)
@@ -41,7 +41,7 @@ class Config:
     LOG_CHANNEL = get_env("LOG_CHANNEL", 0, True)
     
     META_TITLE = get_env("METADATA_TITLE", "Downloaded via Bot")
-    META_AUTHOR = "@hdhub4uumss" # Hardcoded per request
+    META_AUTHOR = "@hdhub4uumss" # Hardcoded Author Name
     DOWNLOAD_DIR = "/app/downloads"
     
     # Cookie Logic
@@ -277,9 +277,10 @@ async def add_admin(client, message):
 
 # --- 7. DOWNLOAD LOGIC (Clean & Professional) ---
 
-@app.on_message(filters.regex(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+") | filters.command(["dl", "download"]))
+# Use a strict regex for HTTP/HTTPS links to prevent random text triggering
+@app.on_message(filters.regex(r"http[s]?://") | filters.command(["dl", "download"]))
 async def link_handler(client, message):
-    # PREVENT MULTIPLE REPLIES: Check if it's a private chat or command
+    # Only reply to private messages OR if explicit command is used
     if message.chat.type != enums.ChatType.PRIVATE and not message.command:
         return
 
@@ -288,7 +289,7 @@ async def link_handler(client, message):
     if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    # URL EXTRACTION LOGIC - FIXED
+    # URL EXTRACTION LOGIC
     url = None
     if message.command:
         if len(message.command) > 1:
@@ -298,7 +299,8 @@ async def link_handler(client, message):
     else:
         url = message.text
         
-    if not url: return 
+    if not url or not url.startswith("http"): 
+        return # Silently ignore non-links
     
     # Clean URL (remove white spaces)
     url = url.strip()
@@ -325,13 +327,17 @@ async def link_handler(client, message):
 @app.on_callback_query(filters.regex(r"^dl\|"))
 async def process_dl(client, callback):
     _, action, req_id = callback.data.split("|")
-    if req_id not in user_data: return await callback.answer("❌ Task Expired.", show_alert=True)
-    if user_data[req_id]['uid'] != callback.from_user.id: return await callback.answer("❌ Not your task!", show_alert=True)
     
+    if req_id not in user_data:
+        return await callback.answer("❌ Task Expired.", show_alert=True)
+    
+    if user_data[req_id]['uid'] != callback.from_user.id:
+        return await callback.answer("❌ Not your task!", show_alert=True)
+
     if action == "cancel":
         del user_data[req_id]
         await callback.message.delete()
-        return
+        return await callback.answer("Cancelled.")
 
     await callback.message.delete()
     status = await callback.message.reply("🔄 **Processing Request...**")
@@ -340,19 +346,23 @@ async def process_dl(client, callback):
     user_dir = f"{Config.DOWNLOAD_DIR}/{callback.from_user.id}_{req_id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
+    # Universal YT-DLP Options
     ydl_opts = {
         'outtmpl': f"{user_dir}/%(title)s.%(ext)s",
-        'quiet': True, 'nocheckcertificate': True, 'writethumbnail': True,
+        'quiet': True,
+        'nocheckcertificate': True,
+        'writethumbnail': True,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
+    # Format Selection
     if action == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
     else:
-        # Prioritize MKV for best quality merging
+        # Best Video + Best Audio -> MKV
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
-        ydl_opts['merge_output_format'] = 'mkv'
+        ydl_opts['merge_output_format'] = 'mkv' # Safest container
 
     if Config.COOKIES_PATH: ydl_opts['cookiefile'] = Config.COOKIES_PATH
 
@@ -360,7 +370,7 @@ async def process_dl(client, callback):
         await status.edit("⬇️ **Downloading...**\n`Connecting to Source...`")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Find file logic
+            # Find the downloaded file
             fpath = None
             for root, dirs, files in os.walk(user_dir):
                 for file in files:
@@ -369,12 +379,12 @@ async def process_dl(client, callback):
                         break
                 if fpath: break
             
-            if not fpath: raise Exception("File Not Found")
+            if not fpath: raise Exception("File Not Found after download")
 
             base = fpath.rsplit(".", 1)[0]
             clean_title = info.get('title', 'Video').replace("_", " ")
             
-            # Metadata
+            # Metadata Injection
             if action != "audio":
                 await status.edit(f"🏷️ **Injecting Metadata...**\n`{Config.META_AUTHOR}`")
                 temp_out = f"{base}_meta.mkv"
@@ -391,28 +401,44 @@ async def process_dl(client, callback):
             await status.edit("⬆️ **Uploading...**")
             start = time.time()
             
-            # Thumb
+            # Thumbnail Logic
             thumb = None
-            for t in [f"{base}.jpg", f"{base}.webp"]:
-                if os.path.exists(t):
-                    thumb = t
+            for ext in [".jpg", ".webp", ".png"]:
+                potential_thumb = f"{base}{ext}"
+                if os.path.exists(potential_thumb):
+                    thumb = potential_thumb
                     break
             final_thumb = prepare_thumbnail(thumb)
             
             w, h, d = 0, 0, 0
-            if action != "audio": w, h, d = get_metadata(fpath)
+            if action != "audio":
+                w, h, d = get_metadata(fpath)
             if d == 0: d = info.get('duration', 0)
             
             caption = f"🎥 **{clean_title}**\n\n👤 **Uploaded By:** {Config.META_AUTHOR}\n⚙️ **Source:** Universal"
             
             if action == "audio":
-                await app.send_audio(callback.message.chat.id, audio=fpath, title=clean_title, thumb=final_thumb, performer=Config.META_AUTHOR, caption=caption, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Audio...**"))
-            elif action == "mirror":
-                await app.send_document(callback.message.chat.id, document=fpath, thumb=final_thumb, caption=caption, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Doc...**"))
-            else:
-                await app.send_video(callback.message.chat.id, video=fpath, caption=caption, duration=int(d), width=int(w), height=int(h), thumb=final_thumb, supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Video...**"))
+                await app.send_audio(
+                    callback.message.chat.id, audio=fpath, title=clean_title, 
+                    thumb=final_thumb, performer=Config.META_AUTHOR, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Audio...**")
+                )
+            elif action == "mirror": # Document Mode
+                await app.send_document(
+                    callback.message.chat.id, document=fpath, thumb=final_thumb, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Doc...**")
+                )
+            else: # Leech Mode (Video)
+                await app.send_video(
+                    callback.message.chat.id, video=fpath, caption=caption,
+                    duration=int(d), width=int(w), height=int(h), thumb=final_thumb,
+                    supports_streaming=True,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Video...**")
+                )
+                
             await status.delete()
             await callback.message.reply_text("✅ **Completed Successfully!**")
+
     except Exception as e:
         await status.edit(f"❌ **Error:** `{str(e)[:200]}`")
     
@@ -427,8 +453,10 @@ if __name__ == "__main__":
     
     keep_alive()   
     start_pinger() 
+    
     print("🔥 Universal Bot Started...")
-    try: app.run()
+    try:
+        app.run()
     except errors.FloodWait as e:
         print(f"❌ FloodWait: {e.value}s. Sleeping...")
         time.sleep(e.value)
