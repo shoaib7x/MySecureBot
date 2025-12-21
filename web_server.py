@@ -10,7 +10,7 @@ log.setLevel(logging.ERROR)
 
 @app.route('/')
 def home():
-    return "Bot is Running! 🚀"
+    return "Bot is Running 24/7! 🚀"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
