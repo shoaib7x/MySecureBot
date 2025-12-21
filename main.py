@@ -9,8 +9,8 @@ import threading
 import shutil
 import math
 import requests
-import re
 import subprocess
+import re
 from datetime import datetime
 from flask import Flask
 from PIL import Image
@@ -19,32 +19,7 @@ from hachoir.parser import createParser
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- 1. WEB SERVER (24/7 Uptime) ---
-web_app = Flask('')
-
-@web_app.route('/')
-def home():
-    return "Bot is Running 24/7! 🚀"
-
-def run_web():
-    web_app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = threading.Thread(target=run_web)
-    t.start()
-
-def ping_self():
-    while True:
-        try:
-            time.sleep(600)
-            requests.get("http://localhost:8080/")
-        except: pass
-
-def start_pinger():
-    t = threading.Thread(target=ping_self)
-    t.start()
-
-# --- 2. CONFIGURATION CLASS ---
+# --- 1. CONFIGURATION CLASS (Robust Loading) ---
 class Config:
     def get_env(name, default=None, is_int=False):
         val = os.environ.get(name)
@@ -56,7 +31,7 @@ class Config:
     API_HASH = get_env("API_HASH", "")
     BOT_TOKEN = get_env("BOT_TOKEN", "")
     
-    # Correctly parse IDs
+    # Owners & Admins
     OWNERS = [int(x) for x in get_env("OWNER_IDS", "").split() if x.strip()]
     ADMINS = [int(x) for x in get_env("ADMIN_IDS", "").split() if x.strip()]
     ADMINS.extend(OWNERS)
@@ -66,9 +41,10 @@ class Config:
     LOG_CHANNEL = get_env("LOG_CHANNEL", 0, True)
     
     META_TITLE = get_env("METADATA_TITLE", "Downloaded via Bot")
-    META_AUTHOR = "@hdhub4uumss"
+    META_AUTHOR = "@hdhub4uumss" # Hardcoded per request
     DOWNLOAD_DIR = "/app/downloads"
     
+    # Cookie Logic - Auto-detect
     COOKIES_PATH = None
     possible_cookies = ["cookie (1).txt", "cookies.txt", "/etc/secrets/cookies.txt"]
     for c in possible_cookies:
@@ -76,7 +52,37 @@ class Config:
             COOKIES_PATH = c
             break
 
-# --- 3. DATABASE ---
+# --- 2. WEB SERVER & PINGER (24/7 Uptime) ---
+web_app = Flask('')
+
+@web_app.route('/')
+def home():
+    return "Bot is Running 24/7! 🚀"
+
+def run_web():
+    # Render binds to port 8080 by default
+    web_app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = threading.Thread(target=run_web)
+    t.start()
+
+def ping_self():
+    while True:
+        try:
+            time.sleep(600) # Ping every 10 minutes
+            # Self-ping to prevent Render sleep
+            # Note: Render free tier might still sleep if no external pings received
+            # Use UptimeRobot pointing to your Render URL for 100% uptime
+            requests.get("http://localhost:8080/")
+            print("Ping sent to keep bot alive!")
+        except: pass
+
+def start_pinger():
+    t = threading.Thread(target=ping_self)
+    t.start()
+
+# --- 3. DATABASE ENGINE ---
 DB_NAME = "bot_data.db"
 
 def init_db():
@@ -177,7 +183,10 @@ async def handle_force_sub(client, message):
 def get_metadata(file_path):
     try:
         metadata = extractMetadata(createParser(file_path))
-        return (metadata.get("width") or 0, metadata.get("height") or 0, metadata.get("duration").seconds or 0)
+        width = metadata.get("width") if metadata.has("width") else 0
+        height = metadata.get("height") if metadata.has("height") else 0
+        duration = metadata.get("duration").seconds if metadata.has("duration") else 0
+        return width, height, duration
     except: return 0, 0, 0
 
 def prepare_thumbnail(thumb_path):
@@ -209,13 +218,13 @@ COOLDOWN_SECONDS = 60
 async def start_cmd(client, message):
     add_user(message.from_user.id)
     if not await handle_force_sub(client, message): return
-    txt = f"👋 **Hello {message.from_user.mention}!**\n\nI am an **Universal File Downloader Bot**.\n\n**Features:**\n✅ High Speed\n✅ Custom Metadata\n✅ Cookies Support\n✅ 4K & MKV Support\n\n👤 **Author:** {Config.META_AUTHOR}"
+    txt = f"👋 **Hello {message.from_user.mention}!**\n\nI am an **Universal File Downloader Bot**.\nI support **YouTube, Instagram, X, TikTok**, and direct links.\n\n**Features:**\n✅ High Speed Downloads\n✅ Custom Metadata Support\n✅ Ad-Bypass Technology\n✅ 4K & MKV Support\n\n👤 **Author:** {Config.META_AUTHOR}"
     btns = InlineKeyboardMarkup([[InlineKeyboardButton("📚 Help", callback_data="help_menu"), InlineKeyboardButton("ℹ️ About", callback_data="about_menu")]])
     await message.reply(txt, quote=True, reply_markup=btns, disable_web_page_preview=True)
 
 @app.on_callback_query(filters.regex("help_menu"))
 async def help_callback(client, callback):
-    txt = "**📚 Help Menu**\n\n**Commands:**\n• `/start` - Restart Bot\n• `/dl <link>` - Force Download\n• `/cancel` - Cancel task\n\n**Admin:**\n/broadcast, /ban, /unban, /log"
+    txt = "**📚 Help Menu**\n\n**How to use:**\nSimply send any link (YouTube, Insta, etc.) to the bot.\n\n**Commands:**\n• `/start` - Restart Bot\n• `/dl <link>` - Force Download\n• `/cancel` - Cancel current task\n\n**Admin:**\n/broadcast, /ban, /unban, /log"
     await callback.message.edit(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="start_menu")]]))
 
 @app.on_callback_query(filters.regex("start_menu"))
@@ -224,10 +233,10 @@ async def back_to_start(client, callback):
     btns = InlineKeyboardMarkup([[InlineKeyboardButton("📚 Help", callback_data="help_menu")]])
     await callback.message.edit(txt, reply_markup=btns)
 
-# Admin: Broadcast - SCOPE FIXED
+# Admin: Broadcast
 @app.on_message(filters.command("broadcast") & filters.user(Config.OWNERS))
 async def broadcast_handler(client, message):
-    if not message.reply_to_message: return await message.reply("❌ Reply to a message.")
+    if not message.reply_to_message: return await message.reply("❌ Reply to a message to broadcast.")
     status = await message.reply("🚀 **Processing Broadcast...**")
     users = get_all_users()
     done, blocked = 0, 0
@@ -250,7 +259,7 @@ async def ban_handler(client, message):
         uid = int(message.command[1])
         if uid in Config.ADMINS: return await message.reply("❌ Cannot ban Admin.")
         ban_user_db(uid)
-        await message.reply(f"🚫 **User {uid} Banned.**")
+        await message.reply(f"🚫 **User {uid} has been Banned.**")
     except: await message.reply("❌ Usage: `/ban <id>`")
 
 # Admin: Unban
@@ -259,7 +268,7 @@ async def unban_handler(client, message):
     try:
         uid = int(message.command[1])
         unban_user_db(uid)
-        await message.reply(f"✅ **User {uid} Unbanned.**")
+        await message.reply(f"✅ **User {uid} has been Unbanned.**")
     except: await message.reply("❌ Usage: `/unban <id>`")
 
 @app.on_message(filters.command("log") & filters.user(Config.OWNERS))
@@ -267,11 +276,16 @@ async def log_cmd(client, message):
     if os.path.exists(DB_NAME): await message.reply_document(DB_NAME)
     else: await message.reply("No Database Found.")
 
+@app.on_message(filters.command("addadmin") & filters.user(Config.OWNERS))
+async def add_admin(client, message):
+    await message.reply("ℹ️ To add Admins, please add their IDs to the `ADMIN_IDS` variable in Render settings.", quote=True)
+
 # --- 7. DOWNLOAD LOGIC (SPAM FIX) ---
 
 @app.on_message(filters.regex(r"http[s]?://") | filters.command(["dl", "download"]))
 async def link_handler(client, message):
-    # SPAM FIX: Check if it's a private chat OR explicit command
+    # Only reply to private messages OR if explicit command is used
+    # This prevents the bot from replying to every link in groups or channels unless tagged
     if message.chat.type != enums.ChatType.PRIVATE and not message.command:
         return
 
@@ -280,7 +294,7 @@ async def link_handler(client, message):
     if is_banned(user_id): return
     if not await handle_force_sub(client, message): return
     
-    # URL Cleaning Logic
+    # URL EXTRACTION LOGIC
     url = None
     if message.command:
         if len(message.command) > 1:
@@ -290,35 +304,44 @@ async def link_handler(client, message):
     else:
         url = message.text
         
-    if not url: return # Silently fail for non-link messages
+    if not url or not url.startswith("http"): return 
     
-    # Clean up the URL string
     url = url.strip()
-    if not url.startswith("http"): return
 
     req_id = str(uuid.uuid4())[:8]
     user_data[req_id] = {"url": url, "uid": user_id}
     
     auth_status = "✅ Cookies" if Config.COOKIES_PATH else "⚠️ No Auth"
     
+    # PROFESSIONAL BUTTONS
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Leech (Video)", callback_data=f"dl|leech|{req_id}"),
          InlineKeyboardButton("📂 Mirror (Doc)", callback_data=f"dl|mirror|{req_id}")],
         [InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl|audio|{req_id}"),
          InlineKeyboardButton("❌ Cancel", callback_data=f"dl|cancel|{req_id}")]
     ])
-    await message.reply(f"🔗 **Link Received**\n`{url}`\n\n🛡️ **Status:** {auth_status}\n👇 **Select Action:**", reply_markup=btns, quote=True, disable_web_page_preview=True)
+    
+    await message.reply(
+        f"🔗 **Link Received**\n`{url}`\n\n🛡️ **Status:** {auth_status}\n👇 **Select Action:**",
+        reply_markup=btns,
+        quote=True,
+        disable_web_page_preview=True
+    )
 
 @app.on_callback_query(filters.regex(r"^dl\|"))
 async def process_dl(client, callback):
     _, action, req_id = callback.data.split("|")
-    if req_id not in user_data: return await callback.answer("❌ Expired.", show_alert=True)
-    if user_data[req_id]['uid'] != callback.from_user.id: return await callback.answer("❌ Not your task!", show_alert=True)
     
+    if req_id not in user_data:
+        return await callback.answer("❌ Task Expired.", show_alert=True)
+    
+    if user_data[req_id]['uid'] != callback.from_user.id:
+        return await callback.answer("❌ Not your task!", show_alert=True)
+
     if action == "cancel":
         del user_data[req_id]
         await callback.message.delete()
-        return
+        return await callback.answer("Cancelled.")
 
     await callback.message.delete()
     status = await callback.message.reply("🔄 **Processing Request...**")
@@ -327,18 +350,24 @@ async def process_dl(client, callback):
     user_dir = f"{Config.DOWNLOAD_DIR}/{callback.from_user.id}_{req_id}"
     if not os.path.exists(user_dir): os.makedirs(user_dir)
     
+    # Universal YT-DLP Options
     ydl_opts = {
         'outtmpl': f"{user_dir}/%(title)s.%(ext)s",
-        'quiet': True, 'nocheckcertificate': True, 'writethumbnail': True,
+        'quiet': True,
+        'nocheckcertificate': True,
+        'writethumbnail': True,
+        # Fake Chrome User Agent to bypass simple blocks
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
+    # Format Selection
     if action == "audio":
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]
     else:
+        # Best Video + Best Audio -> MKV
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
-        ydl_opts['merge_output_format'] = 'mkv'
+        ydl_opts['merge_output_format'] = 'mkv' 
 
     if Config.COOKIES_PATH: ydl_opts['cookiefile'] = Config.COOKIES_PATH
 
@@ -346,6 +375,7 @@ async def process_dl(client, callback):
         await status.edit("⬇️ **Downloading...**\n`Connecting to Source...`")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            # Find the file
             fpath = None
             for root, dirs, files in os.walk(user_dir):
                 for file in files:
@@ -359,6 +389,7 @@ async def process_dl(client, callback):
             base = fpath.rsplit(".", 1)[0]
             clean_title = info.get('title', 'Video').replace("_", " ")
             
+            # Metadata Injection
             if action != "audio":
                 await status.edit(f"🏷️ **Injecting Metadata...**\n`{Config.META_AUTHOR}`")
                 temp_out = f"{base}_meta.mkv"
@@ -374,7 +405,6 @@ async def process_dl(client, callback):
 
             await status.edit("⬆️ **Uploading...**")
             start = time.time()
-            
             thumb = None
             for t in [f"{base}.jpg", f"{base}.webp", f"{base}.png"]:
                 if os.path.exists(t):
@@ -389,13 +419,27 @@ async def process_dl(client, callback):
             caption = f"🎥 **{clean_title}**\n\n👤 **Uploaded By:** {Config.META_AUTHOR}\n⚙️ **Source:** Universal"
             
             if action == "audio":
-                await app.send_audio(callback.message.chat.id, audio=fpath, title=clean_title, thumb=final_thumb, performer=Config.META_AUTHOR, caption=caption, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Audio...**"))
-            elif action == "mirror":
-                await app.send_document(callback.message.chat.id, document=fpath, thumb=final_thumb, caption=caption, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Doc...**"))
-            else:
-                await app.send_video(callback.message.chat.id, video=fpath, caption=caption, duration=int(d), width=int(w), height=int(h), thumb=final_thumb, supports_streaming=True, progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Video...**"))
+                await app.send_audio(
+                    callback.message.chat.id, audio=fpath, title=clean_title, 
+                    thumb=final_thumb, performer=Config.META_AUTHOR, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Audio...**")
+                )
+            elif action == "mirror": # Document Mode
+                await app.send_document(
+                    callback.message.chat.id, document=fpath, thumb=final_thumb, caption=caption,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Doc...**")
+                )
+            else: # Leech Mode (Video)
+                await app.send_video(
+                    callback.message.chat.id, video=fpath, caption=caption,
+                    duration=int(d), width=int(w), height=int(h), thumb=final_thumb,
+                    supports_streaming=True,
+                    progress=progress_bar, progress_args=(status, start, "⬆️ **Uploading Video...**")
+                )
+                
             await status.delete()
             await callback.message.reply_text("✅ **Completed Successfully!**")
+
     except Exception as e:
         await status.edit(f"❌ **Error:** `{str(e)[:200]}`")
     
@@ -403,7 +447,7 @@ async def process_dl(client, callback):
     except: pass
     if req_id in user_data: del user_data[req_id]
 
-# --- 8. STARTUP ---
+# --- 8. STARTUP & FLOODWAIT HANDLING ---
 if __name__ == "__main__":
     init_db()
     if not os.path.exists("downloads"): os.makedirs("downloads")
@@ -414,7 +458,7 @@ if __name__ == "__main__":
     try:
         app.run()
     except errors.FloodWait as e:
-        print(f"❌ FloodWait: {e.value}s. Sleeping...")
+        print(f"❌ FLOOD WAIT: {e.value}s. Sleeping...")
         time.sleep(e.value)
         app.run()
 
